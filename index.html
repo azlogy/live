@@ -22,8 +22,10 @@
   .tag { position: absolute; top: 6px; left: 6px; font-size: 12px; padding: 2px 8px; border-radius: 8px; }
   .no { position: absolute; bottom: 6px; right: 6px; background: rgba(0,0,0,.55); color: #fff; font-size: 12px; padding: 1px 6px; border-radius: 6px; }
   .cb { padding: 8px; }
-  .price { font-size: 14px; color: #444; min-height: 20px; }
+  .price { font-size: 15px; color: #C2410C; margin-top: 2px; }
+  .price b { font-weight: 700; }
   .memo { font-size: 12px; color: #888; }
+  .pname { font-size: 13px; line-height: 1.35; color: #333; min-height: 35px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .step { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
   .step button { width: 38px; height: 34px; border-radius: 8px; border: 1px solid #ccc; background: #fff; font-size: 18px; }
   .step b { font-size: 18px; }
@@ -111,6 +113,10 @@ function toast(text, good) {
   clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = 'none', 3500);
 }
 
+// 價格顯示：2138 → ¥2,138
+function yen(v) { const n = Number(String(v || '').replace(/[^\d.]/g, '')); return n > 0 ? '¥' + Math.floor(n).toLocaleString('ja-JP') : ''; }
+function num(v) { return Number(String(v || '').replace(/[^\d.]/g, '')) || 0; }
+
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 function showBusy(text) {
@@ -123,7 +129,7 @@ function showDone(title, sub, rows) {
   document.getElementById('doneTitle').textContent = title;
   document.getElementById('doneSub').textContent = sub || '';
   document.getElementById('doneList').innerHTML = rows.map(r =>
-    `<div class="row"><img src="${esc(r.url || '')}" alt=""><div>${esc(r.no.slice(-2))} 號${r.sub ? ` <span class="pill sb">${esc(r.sub)}</span>` : ''}${r.tag ? ` <span class="pill ok">${esc(r.tag)}</span>` : ''}${r.memo ? `<div class="muted">${esc(r.memo)}</div>` : ''}</div><b>×${r.q}</b></div>`).join('');
+    `<div class="row"><img src="${esc(r.url || '')}" alt=""><div>${esc(r.no.slice(-2))} 號${r.sub ? ` <span class="pill sb">${esc(r.sub)}</span>` : ''}${r.tag ? ` <span class="pill ok">${esc(r.tag)}</span>` : ''}${r.name ? `<div class="muted" style="color:#555">${esc(r.name)}</div>` : ''}${r.memo ? `<div class="muted">${esc(r.memo)}</div>` : ''}</div><b>×${r.q}</b></div>`).join('');
   document.getElementById('done').style.display = 'flex';
 }
 document.getElementById('doneOk').onclick = () => {
@@ -212,7 +218,7 @@ function render() {
         return `<div class="card ${q ? 'sel' : ''}">
           <div class="ph"><img src="${esc(it.url)}" loading="lazy" alt="">${tag}<span class="no">${esc(it.no.slice(-2))}</span></div>
           <div class="cb">
-          ${it.memo ? `<div class="memo">${esc(it.memo)}</div>` : ''}${ctl}
+          ${it.name ? `<div class="pname">${esc(it.name)}</div>` : ''}${yen(it.price) ? `<div class="price"><b>${yen(it.price)}</b> <span class="muted">含稅</span></div>` : ''}${it.memo ? `<div class="memo">${esc(it.memo)}</div>` : ''}${ctl}
           </div></div>`;
       }).join('') + `</div>`;
     }
@@ -221,7 +227,16 @@ function render() {
   h += `</div><div class="side">`;
 
   // 我的訂單
+  const priceOf = {};
+  S.items.forEach(it => priceOf[it.no] = num(it.price));
+  let total = 0, unknown = 0;
+  S.mine.forEach(o => {
+    if (o.cancelled || o.itemStatus === '欠品') return;
+    const q = (o.got != null && o.got < o.qty) ? o.got : o.qty;
+    if (priceOf[o.no]) total += priceOf[o.no] * q; else unknown++;
+  });
   h += `<div class="box" id="mineBox" style="margin-top:14px"><h3>我的訂單</h3>`;
+  if (total) h += `<div class="banner" style="background:#FFF4E5;color:#7A3E00;margin-bottom:8px">商品預估合計 <b style="font-size:17px">${yen(total)}</b>（含稅）${unknown ? `<div class="muted">另有 ${unknown} 筆價格未定</div>` : ''}<div class="muted">實際金額以收據為準，不含運費</div></div>`;
   if (!S.mine.length) h += `<div class="muted">還沒有訂單</div>`;
   S.mine.forEach(o => {
     const bought = o.itemStatus === '購入済' || o.itemStatus === '一部';
@@ -232,8 +247,9 @@ function render() {
     else if (bought) st = `<span class="pill ok">已買到</span>`;
     const lock = o.cancelled || o.itemStatus === '欠品' || S.closed;
     h += `<div class="line" style="${o.cancelled ? 'opacity:.5' : ''}"><img src="${esc(o.url || '')}" alt="">
-      <div class="t"><div>${esc(o.no)} ${o.sub ? `<span class="pill sb">${esc(o.sub)}</span>` : ''} ${st}</div>
-      <div style="font-size:17px;font-weight:600">×${o.qty} ${o.parts.length > 1 ? `<span class="muted">(${o.parts.join('+')})</span>` : ''}</div>
+      <div class="t"><div>${esc(o.no.slice(-2))} 號 ${o.sub ? `<span class="pill sb">${esc(o.sub)}</span>` : ''} ${st}</div>
+      ${o.name ? `<div class="muted" style="color:#555">${esc(o.name)}</div>` : ''}
+      <div style="font-size:17px;font-weight:600">×${o.qty}${priceOf[o.no] && !o.cancelled ? ` <span style="font-size:13px;font-weight:400;color:#C2410C">${yen(priceOf[o.no] * o.qty)}</span>` : ''} ${o.parts.length > 1 ? `<span class="muted">(${o.parts.join('+')})</span>` : ''}</div>
       ${lock ? (o.memo ? `<div class="muted">${esc(o.memo)}</div>` : '') : `
       <div class="ops"><button data-op="-" data-id="${o.id}" aria-label="減少">−</button><button data-op="+" data-id="${o.id}" aria-label="增加">＋</button><button data-op="x" data-id="${o.id}">取消</button></div>
       <input type="text" data-om="${o.id}" placeholder="備註" value="${esc(o.memo)}">`}
@@ -305,13 +321,14 @@ document.getElementById('submit').onclick = async () => {
   const before = {};
   (S.mine || []).forEach(o => { if (!o.cancelled) before[o.no + '|' + (o.sub || '')] = true; });
   const urls = {};
-  S.items.forEach(it => urls[it.no] = it.url);
+  const names = {};
+  S.items.forEach(it => { urls[it.no] = it.url; names[it.no] = it.name; });
   const r = await call({ action: 'submit', cart: list }, true);
   if (r && r.ok) {
     cart = {}; render();
     const n = list.reduce((a, x) => a + x.q, 0);
     showDone('下單成功', `共 ${list.length} 筆、${n} 個，已經通知現場採買人員`,
-      list.map(x => ({ no: x.no, sub: x.sub, q: x.q, memo: x.memo, url: urls[x.no], tag: before[x.no + '|' + x.sub] ? '追加' : '' })));
+      list.map(x => ({ no: x.no, name: names[x.no], sub: x.sub, q: x.q, memo: x.memo, url: urls[x.no], tag: before[x.no + '|' + x.sub] ? '追加' : '' })));
     if (r.msg && r.msg.indexOf('售完') >= 0) toast(r.msg, false);
   }
 };
