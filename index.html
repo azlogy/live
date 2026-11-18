@@ -30,7 +30,7 @@
   input[type=text] { width: 100%; height: 36px; border: 1px solid #ccc; border-radius: 8px; padding: 0 10px; font-size: 14px; margin-top: 6px; }
   .btn { width: 100%; height: 46px; border: 0; border-radius: 10px; background: #06C755; color: #fff; font-size: 16px; font-weight: 600; }
   .btn:disabled { background: #b8b8b2; }
-  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; padding: 10px 12px; box-shadow: 0 -1px 0 #e5e3db; z-index: 5; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; padding: 10px 12px; box-shadow: 0 -1px 0 #e5e3db; z-index: 5; justify-content: center; }
   h3 { margin: 4px 0 10px; font-size: 16px; }
   .line { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid #eee; }
   .line:first-of-type { border-top: 0; }
@@ -42,6 +42,20 @@
   .muted { color: #888; font-size: 13px; }
   .center { text-align: center; padding: 40px 16px; color: #666; }
   #toast { position: fixed; left: 12px; right: 12px; bottom: 78px; z-index: 9; display: none; white-space: pre-line; }
+
+  /* ===== 電腦版（螢幕寬度 760px 以上）：商品多欄，「我的訂單」放右邊側欄 ===== */
+  @media (min-width: 760px) {
+    header { padding: 14px max(24px, calc((100% - 1200px) / 2 + 24px)); }
+    main { max-width: 1200px; margin: 0 auto; padding: 20px 24px 100px; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; align-items: start; }
+    .grid { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
+    .side { position: sticky; top: 72px; max-height: calc(100vh - 160px); overflow-y: auto; }
+    .side .box { margin-top: 0 !important; }
+    .bar { display: flex; justify-content: center; }
+    .bar .btn { max-width: 480px; }
+    #toast { left: 50%; right: auto; width: 460px; transform: translateX(-50%); }
+    .box.bind { max-width: 480px; margin: 40px auto; }
+  }
 </style>
 </head>
 <body>
@@ -53,7 +67,7 @@
 <script>
 // ===== 設定：只要改這兩行 =====
 const LIFF_ID = '2009296855-h6x6FV1n';
-const API_URL = 'https://script.google.com/macros/s/AKfycbwjQK4vcmgDAeD-uJ424b-IM3ciq6mvAp1uILcIy27sGWsiBsx8_i7Rz6pAY9oO6DYeKg/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbzUvhT-gxjQEjzQXVhHa87jE64-z_VIhrwU_t8VIgn-DtwQfnCBBamen9Hi2XTPZMLMgg/exec';
 // ===============================
 let S = null;          // 伺服器回傳的狀態
 let cart = {};         // { 商品番号: 數量 }
@@ -100,7 +114,7 @@ function render() {
   // 還沒綁定會員編號
   if (!S.member) {
     document.getElementById('bar').style.display = 'none';
-    app.innerHTML = `<div class="box"><h3>第一次使用</h3>
+    app.innerHTML = `<div class="box bind"><h3>第一次使用</h3>
       <div class="muted">請輸入你的會員編號，之後就會自動記住，不用再輸入。</div>
       <input type="text" id="code" placeholder="例如 NL012" autocapitalize="characters">
       <div style="height:10px"></div><button class="btn" id="bind">確認</button></div>`;
@@ -115,6 +129,9 @@ function render() {
   let h = '';
   if (S.closed) h += `<div class="banner info">本場已截止收單，下面是你的訂單結果。</div>`;
 
+  // 版面：手機是上下排，電腦是左（商品）右（我的訂單）
+  h += `<div class="layout"><div>`;
+
   // 商品
   if (!S.closed) {
     if (!S.items.length) h += `<div class="center">店員還沒上傳商品，請稍等一下<br><span class="muted">頁面會自動更新</span></div>`;
@@ -126,7 +143,7 @@ function render() {
         const tag = it.sold ? `<span class="tag ng">已售完</span>` : (ordered[it.no] ? `<span class="tag ok">已訂 ${ordered[it.no]}</span>` : '');
         return `<div class="card ${q ? 'sel' : ''}">
           <div class="ph"><img src="${esc(it.url)}" loading="lazy" alt="">${tag}<span class="no">${esc(it.no.slice(-2))}</span></div>
-          <div class="cb"><div class="price">${it.price ? esc(it.price) + ' 円' : '<span class="muted">價格待確認</span>'}</div>
+          <div class="cb">
           ${it.memo ? `<div class="memo">${esc(it.memo)}</div>` : ''}
           ${it.sold ? '<div class="muted" style="margin-top:6px">這個已經買不到了</div>' : `
           <div class="step"><button data-no="${esc(it.no)}" data-d="-1" aria-label="減少">−</button><b>${q}</b><button data-no="${esc(it.no)}" data-d="1" aria-label="增加">＋</button></div>
@@ -135,6 +152,8 @@ function render() {
       }).join('') + `</div>`;
     }
   }
+
+  h += `</div><div class="side">`;
 
   // 我的訂單
   h += `<div class="box" style="margin-top:14px"><h3>我的訂單</h3>`;
@@ -157,6 +176,7 @@ function render() {
   });
   h += `</div>`;
   if (!S.closed) h += `<div class="muted" style="text-align:center">截止前都可以追加、改數量、改備註或取消<br>店員已經買到的商品只能追加</div>`;
+  h += `</div></div>`;
   app.innerHTML = h;
 
   // 綁事件
@@ -174,7 +194,7 @@ function render() {
 
   const n = Object.values(cart).reduce((a, b) => a + b, 0);
   const bar = document.getElementById('bar');
-  bar.style.display = S.closed ? 'none' : 'block';
+  bar.style.display = S.closed ? 'none' : 'flex';
   const btn = document.getElementById('submit');
   btn.textContent = n ? `送出訂單（${Object.keys(cart).length} 項，共 ${n} 個）` : '選好數量後送出';
   btn.disabled = !n;
