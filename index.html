@@ -38,6 +38,7 @@
   .step { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
   .step button { width: 38px; height: 34px; border-radius: 8px; border: 1px solid #ccc; background: #fff; font-size: 18px; }
   .step b { font-size: 18px; }
+  .memobtn { background: none; border: 0; color: #888; font-size: 13px; padding: 6px 2px 0; cursor: pointer; }
   input[type=text] { width: 100%; height: 36px; border: 1px solid #ccc; border-radius: 8px; padding: 0 10px; font-size: 14px; margin-top: 6px; }
   .btn { width: 100%; height: 50px; border: 0; border-radius: 12px; background: #06C755; color: #fff; font-size: 17px; font-weight: 700;
          box-shadow: 0 4px 0 #04913E; transition: transform .06s, box-shadow .06s, background .15s; cursor: pointer; -webkit-tap-highlight-color: transparent; }
@@ -58,7 +59,9 @@
   .center { text-align: center; padding: 40px 16px; color: #666; }
   #toast { position: fixed; left: 12px; right: 12px; bottom: 78px; z-index: 9; display: none; white-space: pre-line; }
   .subl { border-top: 1px dashed #ddd; padding-top: 6px; margin-top: 6px; }
-  .subl input.sub { margin-top: 0; text-transform: uppercase; }
+  .subsel { width: 100%; height: 40px; border: 2px solid #06C755; border-radius: 8px; background: #F2FBF5; font-size: 15px; font-weight: 600; padding: 0 10px; color: #222; -webkit-appearance: menulist; }
+  .subsel.err { border-color: #E24B4A; background: #FFF6F6; }
+  .subl input.sub { margin-top: 6px; text-transform: uppercase; }
   .subl input.sub.err { border-color: #E24B4A; background: #FFF6F6; }
   .addsub { margin-top: 6px; width: 100%; height: 32px; border: 1px dashed #06C755; border-radius: 8px; background: #fff; color: #0F6E56; font-size: 13px; }
   .pill.sb { background: #E1F5EE; color: #085041; }
@@ -147,22 +150,66 @@ function posInfo(p) {
   return { text: t, grid: `<span class="pg">${g}</span>` };
 }
 // 一張照片拆成好幾個商品時：卡片只放大顯示那個商品，並用粉紅框圈起來（AI 給的框）
-function fitCrop(img) {
-  const b = String(img.dataset.box || '').split(',').map(Number);
-  if (b.length !== 4 || !img.naturalWidth) return;
-  const nw = img.naturalWidth, nh = img.naturalHeight;
+// 算好的大小記在 NAT，下次重畫（按＋−）直接套用，照片不會閃一下、抖一下
+const NAT = {};
+function cropCalc(nw, nh, boxStr) {
+  const b = String(boxStr || '').split(',').map(Number);
+  if (b.length !== 4 || !nw) return null;
   const x0 = b[1] / 1000 * nw, y0 = b[0] / 1000 * nh, x1 = b[3] / 1000 * nw, y1 = b[2] / 1000 * nh;
-  let side = Math.max(x1 - x0, y1 - y0) * 1.35;
-  side = Math.min(Math.max(side, Math.min(nw, nh) * 0.35), Math.max(nw, nh));
+  const bw = x1 - x0, bh = y1 - y0;
+  let side = Math.max(Math.max(bw, bh) * 1.3, Math.min(nw, nh) * 0.35);
+  // 不要超出照片（兩旁出現灰邊）；除非商品本身比照片的短邊還大
+  if (side > Math.min(nw, nh)) side = Math.max(Math.min(nw, nh), Math.max(bw, bh));
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
   const sx = side <= nw ? Math.min(Math.max(0, cx - side / 2), nw - side) : (nw - side) / 2;
   const sy = side <= nh ? Math.min(Math.max(0, cy - side / 2), nh - side) : (nh - side) / 2;
-  const P = v => (v / side * 100) + '%';
-  Object.assign(img.style, { position: 'absolute', maxWidth: 'none', objectFit: 'fill', borderRadius: '0',
-    width: P(nw), height: P(nh), left: P(-sx), top: P(-sy) });
+  const P = v => (v / side * 100).toFixed(3) + '%';
+  return {
+    img: `position:absolute;max-width:none;object-fit:fill;border-radius:0;width:${P(nw)};height:${P(nh)};left:${P(-sx)};top:${P(-sy)}`,
+    hl: `left:${P(x0 - sx)};top:${P(y0 - sy)};width:${P(bw)};height:${P(bh)}`
+  };
+}
+function fitCrop(img) {
+  if (!img.naturalWidth) return;
+  NAT[img.getAttribute('src')] = [img.naturalWidth, img.naturalHeight];
+  const c = cropCalc(img.naturalWidth, img.naturalHeight, img.dataset.box);
+  if (!c) return;
+  img.style.cssText = c.img;
   let hl = img.parentNode.querySelector('.hl');
   if (!hl) { hl = document.createElement('i'); hl.className = 'hl'; img.parentNode.appendChild(hl); }
-  Object.assign(hl.style, { left: P(x0 - sx), top: P(y0 - sy), width: P(x1 - x0), height: P(y1 - y0) });
+  hl.style.cssText = c.hl;
+}
+// 卡片照片的 HTML：已經知道照片大小就直接畫好裁切（不用等載入）
+function cropImg(url, box, useBox) {
+  if (!useBox || !box) return `<img src="${esc(sm(url))}" loading="lazy" alt="">`;
+  // 裁切放大時用大一點的圖，不然會糊
+  const big = String(url || '').replace(/([?&]sz=)w\d+/, '$1w1600');
+  const src = esc(big);
+  const n = NAT[big], c = n && cropCalc(n[0], n[1], box);
+  if (c) return `<img src="${src}" alt="" data-box="${esc(box)}" style="${c.img}"><i class="hl" style="${c.hl}"></i>`;
+  return `<img src="${src}" loading="lazy" alt="" data-box="${esc(box)}" onload="fitCrop(this)">`;
+}
+// 備註：平常收起來（一張照片已經拆成單一商品，大多不用寫），要寫再點開
+const MEMO_OPEN = {};
+function memoBox(no, i, memo) {
+  const k = no + '|' + i;
+  if (!memo && !MEMO_OPEN[k]) return `<button class="memobtn" data-memoopen="${esc(k)}">＋ 備註</button>`;
+  return `<input type="text" data-memo="${esc(no)}" data-i="${i}" placeholder="備註（例：要新包裝）" value="${esc(memo)}">`;
+}
+// 代理：子會員下拉選單（同一個商品已經選過的子會員會標「已選」不能重複選）；清單沒有的選最後一項自己輸入
+function subPicker(no, i, l, lines) {
+  const subs = (S.agency && S.agency.subs) || [];
+  const inList = subs.some(x => x.code === l.sub);
+  const typing = l.newSub || (l.sub && !inList);
+  const used = lines.filter((x, k) => k !== i).map(x => x.sub);
+  let o = `<option value="" ${!l.sub && !typing ? 'selected' : ''} disabled>選擇子會員</option>`;
+  subs.forEach(x => {
+    const u = used.indexOf(x.code) >= 0;
+    o += `<option value="${esc(x.code)}" ${l.sub === x.code ? 'selected' : ''} ${u ? 'disabled' : ''}>${esc(x.code)}　${esc(x.name || '')}${u ? '（已選）' : ''}</option>`;
+  });
+  o += `<option value="__new" ${typing ? 'selected' : ''}>＋ 新子會員（打字）</option>`;
+  return `<select class="subsel ${l.err && !typing ? 'err' : ''}" data-subsel="${esc(no)}" data-i="${i}">${o}</select>` +
+    (typing ? `<input type="text" class="sub ${l.err ? 'err' : ''}" data-sub="${esc(no)}" data-i="${i}" placeholder="輸入子會員編號（例：${esc(S.agency.example || '')}）" value="${esc(l.sub)}" autocapitalize="characters">` : '');
 }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -226,8 +273,7 @@ function render() {
   AG = !!S.agency;
   let h = '';
   if (AG) {
-    h += `<datalist id="subList">${S.agency.subs.map(x => `<option value="${esc(x.code)}">${esc(x.name)}</option>`).join('')}</datalist>`;
-    if (!S.closed) h += `<div class="banner info">代理帳號：每一筆都要填<b>子會員</b>。可以從清單選，也可以輸入新的編號（例：${esc(S.agency.example || '')}）。</div>`;
+    if (!S.closed) h += `<div class="banner info">代理帳號：每一筆都要選<b>子會員</b>。同一個商品可以分給好幾位子會員（按「＋ 分給其他子會員」）。</div>`;
   }
   if (S.closed) h += `<div class="banner info">本場已截止收單，下面是你的訂單結果。</div>`;
 
@@ -250,20 +296,20 @@ function render() {
           // 一般會員：一個數量＋備註
           const l = lines[0] || { q: 0, memo: '' };
           ctl = `<div class="step"><button data-no="${esc(it.no)}" data-i="0" data-d="-1" aria-label="減少">−</button><b>${l.q}</b><button data-no="${esc(it.no)}" data-i="0" data-d="1" aria-label="增加">＋</button></div>
-            ${l.q ? `<input type="text" data-memo="${esc(it.no)}" data-i="0" placeholder="備註：顏色、尺寸" value="${esc(l.memo)}">` : ''}`;
+            ${l.q ? memoBox(it.no, 0, l.memo) : ''}`;
         } else if (!lines.length) {
           // 代理：還沒選 → 一個「下單」按鈕
           ctl = `<button class="addsub" data-add="${esc(it.no)}">＋ 選子會員下單</button>`;
         } else {
           // 代理：每一行＝一位子會員
           ctl = lines.map((l, i) => `<div class="subl">
-              <input type="text" class="sub ${l.err ? 'err' : ''}" list="subList" data-sub="${esc(it.no)}" data-i="${i}" placeholder="子會員（例：${esc(S.agency.example || '')}）" value="${esc(l.sub)}" autocapitalize="characters">
+              ${subPicker(it.no, i, l, lines)}
               <div class="step"><button data-no="${esc(it.no)}" data-i="${i}" data-d="-1" aria-label="減少">−</button><b>${l.q}</b><button data-no="${esc(it.no)}" data-i="${i}" data-d="1" aria-label="增加">＋</button></div>
-              <input type="text" data-memo="${esc(it.no)}" data-i="${i}" placeholder="備註：顏色、尺寸" value="${esc(l.memo)}">
+              ${memoBox(it.no, i, l.memo)}
             </div>`).join('') + `<button class="addsub" data-add="${esc(it.no)}">＋ 分給其他子會員</button>`;
         }
         return `<div class="card ${q ? 'sel' : ''}">
-          <div class="ph" style="overflow:hidden"><img src="${esc(sm(it.url))}" loading="lazy" alt=""${it.box && /-\d+$/.test(it.no) ? ` data-box="${esc(it.box)}" onload="fitCrop(this)"` : ''}>${tag}<span class="no">${esc(it.no.slice(5))}</span></div>
+          <div class="ph" style="overflow:hidden">${cropImg(it.url, it.box, /-\d+$/.test(it.no))}${tag}<span class="no">${esc(it.no.slice(5))}</span></div>
           <div class="cb">
           ${it.pos && /-\d+$/.test(it.no) ? `<div class="pos">${posInfo(it.pos).grid}照片${posInfo(it.pos).text}的</div>` : ''}${it.name ? `<div class="pname">${esc(it.name)}</div>` : ''}${yen(it.price) ? `<div class="price"><b>${yen(it.price)}</b> <span class="muted">含稅</span></div>` : ''}${it.memo ? `<div class="memo">${esc(it.memo)}</div>` : ''}${ctl}
           </div></div>`;
@@ -321,10 +367,25 @@ function render() {
     const no = b.dataset.add;
     (cart[no] = cart[no] || []).push({ sub: '', q: 1, memo: '' });
     render();
-    const ins = document.querySelectorAll(`[data-sub="${CSS.escape(no)}"]`);
-    if (ins.length) ins[ins.length - 1].focus();
+    // 新增的那一行：直接打開子會員選單
+    const sels = document.querySelectorAll(`[data-subsel="${CSS.escape(no)}"]`);
+    const sel = sels[sels.length - 1];
+    if (sel) { sel.focus(); try { sel.showPicker && sel.showPicker(); } catch (e) {} }
+  });
+  app.querySelectorAll('[data-memoopen]').forEach(b => b.onclick = () => {
+    MEMO_OPEN[b.dataset.memoopen] = true; render();
+    const [no, i] = b.dataset.memoopen.split('|');
+    const inp = document.querySelector(`[data-memo="${CSS.escape(no)}"][data-i="${i}"]`); if (inp) inp.focus();
   });
   app.querySelectorAll('[data-memo]').forEach(i => i.oninput = () => { const l = (cart[i.dataset.memo] || [])[Number(i.dataset.i)]; if (l) l.memo = i.value; });
+  app.querySelectorAll('[data-subsel]').forEach(sel => sel.onchange = () => {
+    const no = sel.dataset.subsel, i = Number(sel.dataset.i);
+    const l = (cart[no] || [])[i];
+    if (!l) return;
+    l.err = false;
+    if (sel.value === '__new') { l.newSub = true; l.sub = ''; render(); const inp = document.querySelector(`[data-sub="${CSS.escape(no)}"][data-i="${i}"]`); if (inp) inp.focus(); return; }
+    l.newSub = false; l.sub = sel.value; render();
+  });
   app.querySelectorAll('[data-sub]').forEach(i => i.oninput = () => {
     const l = (cart[i.dataset.sub] || [])[Number(i.dataset.i)];
     if (l) { l.sub = i.value.trim().toUpperCase(); l.err = false; i.classList.remove('err'); }
