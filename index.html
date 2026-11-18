@@ -42,6 +42,26 @@
   .muted { color: #888; font-size: 13px; }
   .center { text-align: center; padding: 40px 16px; color: #666; }
   #toast { position: fixed; left: 12px; right: 12px; bottom: 78px; z-index: 9; display: none; white-space: pre-line; }
+  .subl { border-top: 1px dashed #ddd; padding-top: 6px; margin-top: 6px; }
+  .subl input.sub { margin-top: 0; text-transform: uppercase; }
+  .subl input.sub.err { border-color: #E24B4A; background: #FFF6F6; }
+  .addsub { margin-top: 6px; width: 100%; height: 32px; border: 1px dashed #06C755; border-radius: 8px; background: #fff; color: #0F6E56; font-size: 13px; }
+  .pill.sb { background: #E1F5EE; color: #085041; }
+  /* 處理中遮罩 */
+  #busy { position: fixed; inset: 0; background: rgba(255,255,255,.65); z-index: 20; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 12px; font-size: 15px; color: #333; }
+  .spin { width: 42px; height: 42px; border: 5px solid #d8f3e3; border-top-color: #06C755; border-radius: 50%; animation: sp .8s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  /* 下單成功視窗 */
+  #done { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 30; display: none; align-items: center; justify-content: center; padding: 20px; }
+  #done .dlg { background: #fff; border-radius: 16px; width: 100%; max-width: 380px; padding: 22px 18px 16px; text-align: center; }
+  #done .ok-ic { width: 64px; height: 64px; border-radius: 50%; background: #06C755; color: #fff; font-size: 38px; line-height: 64px; margin: 0 auto 10px; }
+  #done h2 { margin: 0 0 4px; font-size: 20px; }
+  #done .list { text-align: left; margin: 14px 0; max-height: 40vh; overflow-y: auto; }
+  #done .row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid #eee; }
+  #done .row img { width: 48px; height: 48px; border-radius: 8px; object-fit: cover; background: #e9e8e2; }
+  #done .row b { font-size: 17px; margin-left: auto; }
+  .flash { animation: fl 2.4s ease-out; }
+  @keyframes fl { 0%, 40% { background: #EAF3DE; } 100% { background: transparent; } }
 
   /* ===== 電腦版（螢幕寬度 760px 以上）：商品多欄，「我的訂單」放右邊側欄 ===== */
   @media (min-width: 760px) {
@@ -63,6 +83,9 @@
 <main id="app"><div class="center">載入中…</div></main>
 <div class="bar" id="bar" style="display:none"><button class="btn" id="submit">送出訂單</button></div>
 <div id="toast" class="banner"></div>
+<div id="busy"><div class="spin"></div><div id="busyText">處理中…</div></div>
+<div id="done"><div class="dlg"><div class="ok-ic">✓</div><h2 id="doneTitle">下單成功</h2><div class="muted" id="doneSub"></div>
+  <div class="list" id="doneList"></div><button class="btn" id="doneOk">好</button></div></div>
 
 <script>
 // ===== 設定：只要改這兩行 =====
@@ -70,10 +93,10 @@ const LIFF_ID = '2009296855-h6x6FV1n';
 const API_URL = 'https://script.google.com/macros/s/AKfycbwjQK4vcmgDAeD-uJ424b-IM3ciq6mvAp1uILcIy27sGWsiBsx8_i7Rz6pAY9oO6DYeKg/exec';
 // ===============================
 let S = null;          // 伺服器回傳的狀態
-let cart = {};         // { 商品番号: 數量 }
-let memo = {};         // { 商品番号: 備註 }
+let cart = {};         // { 商品番号: [ { sub: 子會員, q: 數量, memo: 備註 } ] }（一般會員每個商品只有一行，sub 是空的）
 let idToken = '';
 let busy = false;
+let AG = false;        // 是不是代理帳號
 
 // 呼叫後端（GAS 的 doPost）
 function api(req) {
@@ -90,8 +113,29 @@ function toast(text, good) {
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
+function showBusy(text) {
+  document.getElementById('busyText').textContent = text || '處理中…';
+  document.getElementById('busy').style.display = text === false ? 'none' : 'flex';
+}
+
+// 下單成功的大視窗：列出這次送出的商品
+function showDone(title, sub, rows) {
+  document.getElementById('doneTitle').textContent = title;
+  document.getElementById('doneSub').textContent = sub || '';
+  document.getElementById('doneList').innerHTML = rows.map(r =>
+    `<div class="row"><img src="${esc(r.url || '')}" alt=""><div>${esc(r.no.slice(-2))} 號${r.sub ? ` <span class="pill sb">${esc(r.sub)}</span>` : ''}${r.tag ? ` <span class="pill ok">${esc(r.tag)}</span>` : ''}${r.memo ? `<div class="muted">${esc(r.memo)}</div>` : ''}</div><b>×${r.q}</b></div>`).join('');
+  document.getElementById('done').style.display = 'flex';
+}
+document.getElementById('doneOk').onclick = () => {
+  document.getElementById('done').style.display = 'none';
+  // 捲到「我的訂單」並閃一下，讓客人看到訂單在這裡
+  const box = document.getElementById('mineBox');
+  if (box) { box.scrollIntoView({ behavior: 'smooth', block: 'start' }); box.classList.remove('flash'); void box.offsetWidth; box.classList.add('flash'); }
+};
+
 async function call(req, quiet) {
   if (busy) return; busy = true;
+  if (!quiet) showBusy(req.action === 'submit' ? '送出中…' : req.action === 'bind' ? '確認中…' : '處理中…');
   try {
     const r = await api(req);
     if (!r.ok) {
@@ -104,7 +148,7 @@ async function call(req, quiet) {
     return r;
   } catch (e) {
     toast('連線失敗，請稍後再試', false);
-  } finally { busy = false; }
+  } finally { busy = false; showBusy(false); }
 }
 
 function render() {
@@ -126,7 +170,12 @@ function render() {
     return;
   }
 
+  AG = !!S.agency;
   let h = '';
+  if (AG) {
+    h += `<datalist id="subList">${S.agency.subs.map(x => `<option value="${esc(x.code)}">${esc(x.name)}</option>`).join('')}</datalist>`;
+    if (!S.closed) h += `<div class="banner info">代理帳號：每一筆都要填<b>子會員</b>。可以從清單選，也可以輸入新的編號（例：${esc(S.agency.example || '')}）。</div>`;
+  }
   if (S.closed) h += `<div class="banner info">本場已截止收單，下面是你的訂單結果。</div>`;
 
   // 版面：手機是上下排，電腦是左（商品）右（我的訂單）
@@ -134,20 +183,36 @@ function render() {
 
   // 商品
   if (!S.closed) {
-    if (!S.items.length) h += `<div class="center">店員還沒上傳商品，請稍等一下<br><span class="muted">頁面會自動更新</span></div>`;
+    if (!S.items.length) h += `<div class="center">採買人員還沒上傳商品，請稍等一下<br><span class="muted">頁面會自動更新</span></div>`;
     else {
       const ordered = {};
-      S.mine.forEach(o => { if (!o.cancelled) ordered[o.no] = o.qty; });
+      S.mine.forEach(o => { if (!o.cancelled) ordered[o.no] = (ordered[o.no] || 0) + o.qty; });
       h += `<div class="grid">` + S.items.map(it => {
-        const q = cart[it.no] || 0;
+        const lines = cart[it.no] || [];
+        const q = lines.reduce((a, l) => a + l.q, 0);
         const tag = it.sold ? `<span class="tag ng">已售完</span>` : (ordered[it.no] ? `<span class="tag ok">已訂 ${ordered[it.no]}</span>` : '');
+        let ctl = '';
+        if (it.sold) ctl = '<div class="muted" style="margin-top:6px">這個已經買不到了</div>';
+        else if (!AG) {
+          // 一般會員：一個數量＋備註
+          const l = lines[0] || { q: 0, memo: '' };
+          ctl = `<div class="step"><button data-no="${esc(it.no)}" data-i="0" data-d="-1" aria-label="減少">−</button><b>${l.q}</b><button data-no="${esc(it.no)}" data-i="0" data-d="1" aria-label="增加">＋</button></div>
+            ${l.q ? `<input type="text" data-memo="${esc(it.no)}" data-i="0" placeholder="備註：顏色、尺寸" value="${esc(l.memo)}">` : ''}`;
+        } else if (!lines.length) {
+          // 代理：還沒選 → 一個「下單」按鈕
+          ctl = `<button class="addsub" data-add="${esc(it.no)}">＋ 選子會員下單</button>`;
+        } else {
+          // 代理：每一行＝一位子會員
+          ctl = lines.map((l, i) => `<div class="subl">
+              <input type="text" class="sub ${l.err ? 'err' : ''}" list="subList" data-sub="${esc(it.no)}" data-i="${i}" placeholder="子會員（例：${esc(S.agency.example || '')}）" value="${esc(l.sub)}" autocapitalize="characters">
+              <div class="step"><button data-no="${esc(it.no)}" data-i="${i}" data-d="-1" aria-label="減少">−</button><b>${l.q}</b><button data-no="${esc(it.no)}" data-i="${i}" data-d="1" aria-label="增加">＋</button></div>
+              <input type="text" data-memo="${esc(it.no)}" data-i="${i}" placeholder="備註：顏色、尺寸" value="${esc(l.memo)}">
+            </div>`).join('') + `<button class="addsub" data-add="${esc(it.no)}">＋ 分給其他子會員</button>`;
+        }
         return `<div class="card ${q ? 'sel' : ''}">
           <div class="ph"><img src="${esc(it.url)}" loading="lazy" alt="">${tag}<span class="no">${esc(it.no.slice(-2))}</span></div>
           <div class="cb">
-          ${it.memo ? `<div class="memo">${esc(it.memo)}</div>` : ''}
-          ${it.sold ? '<div class="muted" style="margin-top:6px">這個已經買不到了</div>' : `
-          <div class="step"><button data-no="${esc(it.no)}" data-d="-1" aria-label="減少">−</button><b>${q}</b><button data-no="${esc(it.no)}" data-d="1" aria-label="增加">＋</button></div>
-          ${q ? `<input type="text" data-memo="${esc(it.no)}" placeholder="備註：顏色、尺寸" value="${esc(memo[it.no] || '')}">` : ''}`}
+          ${it.memo ? `<div class="memo">${esc(it.memo)}</div>` : ''}${ctl}
           </div></div>`;
       }).join('') + `</div>`;
     }
@@ -156,7 +221,7 @@ function render() {
   h += `</div><div class="side">`;
 
   // 我的訂單
-  h += `<div class="box" style="margin-top:14px"><h3>我的訂單</h3>`;
+  h += `<div class="box" id="mineBox" style="margin-top:14px"><h3>我的訂單</h3>`;
   if (!S.mine.length) h += `<div class="muted">還沒有訂單</div>`;
   S.mine.forEach(o => {
     const bought = o.itemStatus === '購入済' || o.itemStatus === '一部';
@@ -167,7 +232,7 @@ function render() {
     else if (bought) st = `<span class="pill ok">已買到</span>`;
     const lock = o.cancelled || o.itemStatus === '欠品' || S.closed;
     h += `<div class="line" style="${o.cancelled ? 'opacity:.5' : ''}"><img src="${esc(o.url || '')}" alt="">
-      <div class="t"><div>${esc(o.no)} ${st}</div>
+      <div class="t"><div>${esc(o.no)} ${o.sub ? `<span class="pill sb">${esc(o.sub)}</span>` : ''} ${st}</div>
       <div style="font-size:17px;font-weight:600">×${o.qty} ${o.parts.length > 1 ? `<span class="muted">(${o.parts.join('+')})</span>` : ''}</div>
       ${lock ? (o.memo ? `<div class="muted">${esc(o.memo)}</div>` : '') : `
       <div class="ops"><button data-op="-" data-id="${o.id}" aria-label="減少">−</button><button data-op="+" data-id="${o.id}" aria-label="增加">＋</button><button data-op="x" data-id="${o.id}">取消</button></div>
@@ -175,36 +240,80 @@ function render() {
       </div></div>`;
   });
   h += `</div>`;
-  if (!S.closed) h += `<div class="muted" style="text-align:center">截止前都可以追加、改數量、改備註或取消<br>店員已經買到的商品只能追加</div>`;
+  if (!S.closed) h += `<div class="muted" style="text-align:center">截止前都可以追加、改數量、改備註或取消<br>採買人員已經買到的商品只能追加</div>`;
   h += `</div></div>`;
   app.innerHTML = h;
 
   // 綁事件
   app.querySelectorAll('[data-d]').forEach(b => b.onclick = () => {
-    const no = b.dataset.no; cart[no] = Math.max(0, Math.min(99, (cart[no] || 0) + Number(b.dataset.d)));
-    if (!cart[no]) { delete cart[no]; delete memo[no]; }
+    const no = b.dataset.no, i = Number(b.dataset.i);
+    const lines = cart[no] = cart[no] || [];
+    if (!lines[i]) lines[i] = { sub: '', q: 0, memo: '' };
+    lines[i].q = Math.max(0, Math.min(99, lines[i].q + Number(b.dataset.d)));
+    if (!lines[i].q) lines.splice(i, 1);           // 數量變 0 → 這一行拿掉
+    if (!lines.length) delete cart[no];
     render();
   });
-  app.querySelectorAll('[data-memo]').forEach(i => i.oninput = () => memo[i.dataset.memo] = i.value);
+  app.querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
+    const no = b.dataset.add;
+    (cart[no] = cart[no] || []).push({ sub: '', q: 1, memo: '' });
+    render();
+    const ins = document.querySelectorAll(`[data-sub="${CSS.escape(no)}"]`);
+    if (ins.length) ins[ins.length - 1].focus();
+  });
+  app.querySelectorAll('[data-memo]').forEach(i => i.oninput = () => { const l = (cart[i.dataset.memo] || [])[Number(i.dataset.i)]; if (l) l.memo = i.value; });
+  app.querySelectorAll('[data-sub]').forEach(i => i.oninput = () => {
+    const l = (cart[i.dataset.sub] || [])[Number(i.dataset.i)];
+    if (l) { l.sub = i.value.trim().toUpperCase(); l.err = false; i.classList.remove('err'); }
+  });
   app.querySelectorAll('[data-op]').forEach(b => b.onclick = () => {
     if (b.dataset.op === 'x' && !confirm('確定要取消這筆訂單嗎？')) return;
     call({ action: 'update', orderId: b.dataset.id, op: b.dataset.op });
   });
   app.querySelectorAll('[data-om]').forEach(i => i.onchange = () => call({ action: 'update', orderId: i.dataset.om, op: 'memo', memo: i.value }));
 
-  const n = Object.values(cart).reduce((a, b) => a + b, 0);
+  const all = cartList();
+  const n = all.reduce((a, x) => a + x.q, 0);
   const bar = document.getElementById('bar');
   bar.style.display = S.closed ? 'none' : 'flex';
   const btn = document.getElementById('submit');
-  btn.textContent = n ? `送出訂單（${Object.keys(cart).length} 項，共 ${n} 個）` : '選好數量後送出';
+  btn.textContent = n ? `送出訂單（${all.length} 筆，共 ${n} 個）` : '選好數量後送出';
   btn.disabled = !n;
 }
 
+// 購物車攤平成一筆一筆（代理：同一個商品、同一個子會員合併成一筆）
+function cartList() {
+  const out = [];
+  Object.keys(cart).forEach(no => (cart[no] || []).forEach(l => {
+    if (!l.q) return;
+    const ex = out.find(x => x.no === no && x.sub === (l.sub || ''));
+    if (ex) { ex.q += l.q; if (l.memo) ex.memo = l.memo; }
+    else out.push({ no: no, sub: l.sub || '', q: l.q, memo: l.memo || '' });
+  }));
+  return out;
+}
+
 document.getElementById('submit').onclick = async () => {
-  const list = Object.keys(cart).map(no => ({ no: no, q: cart[no], memo: memo[no] || '' }));
+  const list = cartList();
   if (!list.length) { toast('請至少選一個商品的數量', false); return; }
-  const r = await call({ action: 'submit', cart: list });
-  if (r && r.ok) { cart = {}; memo = {}; render(); }
+  if (AG) {
+    // 代理：每一行都要有子會員
+    let miss = 0;
+    Object.keys(cart).forEach(no => cart[no].forEach(l => { if (!l.sub) { l.err = true; miss++; } }));
+    if (miss) { render(); toast('有 ' + miss + ' 筆還沒填子會員（紅框）', false); return; }
+  }
+  const before = {};
+  (S.mine || []).forEach(o => { if (!o.cancelled) before[o.no + '|' + (o.sub || '')] = true; });
+  const urls = {};
+  S.items.forEach(it => urls[it.no] = it.url);
+  const r = await call({ action: 'submit', cart: list }, true);
+  if (r && r.ok) {
+    cart = {}; render();
+    const n = list.reduce((a, x) => a + x.q, 0);
+    showDone('下單成功', `共 ${list.length} 筆、${n} 個，已經通知現場採買人員`,
+      list.map(x => ({ no: x.no, sub: x.sub, q: x.q, memo: x.memo, url: urls[x.no], tag: before[x.no + '|' + x.sub] ? '追加' : '' })));
+    if (r.msg && r.msg.indexOf('售完') >= 0) toast(r.msg, false);
+  }
 };
 
 // 沒有在選東西、沒有在打字時，每 20 秒自動更新（看新上架的商品、售完狀態）
