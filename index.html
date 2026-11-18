@@ -1,1297 +1,415 @@
-/**
- * AZLOGY 現場連線 — 機器人 + 下單頁 + 現場核對頁
- *
- * 【檔案】這個 GAS 專案要有 2 個檔案：
- *   程式碼.gs（這個）、staff.html（備用的核對頁，網址加 ?page=staff）
- *   客人下單頁 index.html、現場核對頁 staff.html 都放在 GitHub Pages：
- *   https://azlogy.github.io/live/　https://azlogy.github.io/live/staff.html
- *
- * 【功能】
- *  1. 採買人員把照片傳給「現場連線機器人」→ 存 Drive、編號、登記在「商品」工作表
- *  2. 「07 紅/藍」→ 補 07 號商品的備註；傳「確認」→ 機器人回傳現場核對頁連結
- *  3. 客人用 LIFF 下單頁：第一次輸入會員編號（記在「会員登録」），之後自動認得
- *  4. 客人可以下單、追加、改數量、改備註、取消（規則見下面 api 的說明）
- *  5. 現場人員用核對頁：全数購入／一部／欠品、看變動紀錄、締切
- *  6. 締切後由「小助手」推播結果圖卡到每位客人的群組（群組ID 來自 AZ入庫資料 → 群組設定）
- *  7. 任何錯誤只私訊給你（管理者）
- *
- * 【指令碼屬性】
- *  LINE_TOKEN  ：現場連線機器人的 Channel access token
- *  XZS_TOKEN   ：AZLOGY小助手的 Channel access token（締切時推播到客人群組用）
- *  GEMINI_API_KEY：AI 看照片自動取品名用（跟小助手同一把）
- *  LOGO_URL    ：（可不填）公司 logo 圖片網址，會顯示在結果圖卡的標題左邊
- *  ADMIN_USER_ID、PHOTO_FOLDER_ID：自動寫入
- *
- * 時間一律用日本時間。
- */
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>今日連線商品</title>
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; background: #f5f5f3; color: #1a1a1a; font-size: 15px; }
+  header { background: #06C755; color: #fff; padding: 12px 14px; font-size: 17px; font-weight: 600; display: flex; align-items: center; gap: 8px; position: sticky; top: 0; z-index: 5; }
+  header .who { margin-left: auto; font-size: 13px; font-weight: 400; opacity: .95; }
+  main { padding: 12px; padding-bottom: 90px; }
+  .box { background: #fff; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .banner { border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; }
+  .ok { background: #EAF3DE; color: #27500A; } .ng { background: #FCEBEB; color: #791F1F; } .info { background: #E6F1FB; color: #0C447C; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .card { background: #fff; border-radius: 12px; overflow: hidden; border: 2px solid transparent; }
+  .card.sel { border-color: #06C755; }
+  .ph { position: relative; aspect-ratio: 1 / 1; background: #e9e8e2; }
+  .ph img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+  .ph::after { content: '🔍'; position: absolute; right: 6px; bottom: 6px; font-size: 13px; background: rgba(255,255,255,.85); border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  .tag { position: absolute; top: 6px; left: 6px; font-size: 12px; padding: 2px 8px; border-radius: 8px; }
+  .no { position: absolute; bottom: 6px; right: 6px; background: rgba(0,0,0,.55); color: #fff; font-size: 12px; padding: 1px 6px; border-radius: 6px; }
+  .cb { padding: 8px; }
+  .price { font-size: 15px; color: #C2410C; margin-top: 2px; }
+  .price b { font-weight: 700; }
+  .memo { font-size: 12px; color: #888; }
+  .pos { font-size: 12px; color: #0F6E56; background: #E1F5EE; display: inline-block; padding: 1px 7px; border-radius: 6px; margin-bottom: 3px; }
+  .pname { font-size: 13px; line-height: 1.35; color: #333; min-height: 35px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .step { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+  .step button { width: 38px; height: 34px; border-radius: 8px; border: 1px solid #ccc; background: #fff; font-size: 18px; }
+  .step b { font-size: 18px; }
+  input[type=text] { width: 100%; height: 36px; border: 1px solid #ccc; border-radius: 8px; padding: 0 10px; font-size: 14px; margin-top: 6px; }
+  .btn { width: 100%; height: 50px; border: 0; border-radius: 12px; background: #06C755; color: #fff; font-size: 17px; font-weight: 700;
+         box-shadow: 0 4px 0 #04913E; transition: transform .06s, box-shadow .06s, background .15s; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .btn:active { transform: translateY(3px); box-shadow: 0 1px 0 #04913E; background: #05B04B; }
+  .btn:disabled { background: #b8b8b2; box-shadow: none; transform: none; }
+  .btn.sending { background: #05A045; box-shadow: none; transform: translateY(3px); }
+  .step button:active, .ops button:active, .addsub:active { transform: scale(.94); background: #E1F5EE; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; padding: 10px 12px; box-shadow: 0 -1px 0 #e5e3db; z-index: 5; justify-content: center; }
+  h3 { margin: 4px 0 10px; font-size: 16px; }
+  .line { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid #eee; }
+  .line:first-of-type { border-top: 0; }
+  .line img { width: 64px; height: 64px; border-radius: 8px; object-fit: cover; background: #e9e8e2; flex-shrink: 0; }
+  .line .t { flex: 1; min-width: 0; }
+  .ops { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
+  .ops button { height: 32px; min-width: 36px; border: 1px solid #ccc; border-radius: 8px; background: #fff; font-size: 14px; padding: 0 10px; }
+  .pill { font-size: 12px; padding: 1px 7px; border-radius: 6px; }
+  .muted { color: #888; font-size: 13px; }
+  .center { text-align: center; padding: 40px 16px; color: #666; }
+  #toast { position: fixed; left: 12px; right: 12px; bottom: 78px; z-index: 9; display: none; white-space: pre-line; }
+  .subl { border-top: 1px dashed #ddd; padding-top: 6px; margin-top: 6px; }
+  .subl input.sub { margin-top: 0; text-transform: uppercase; }
+  .subl input.sub.err { border-color: #E24B4A; background: #FFF6F6; }
+  .addsub { margin-top: 6px; width: 100%; height: 32px; border: 1px dashed #06C755; border-radius: 8px; background: #fff; color: #0F6E56; font-size: 13px; }
+  .pill.sb { background: #E1F5EE; color: #085041; }
+  /* 處理中遮罩 */
+  #busy { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 20; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 12px; font-size: 15px; color: #333; }
+  #busy .bx { background: #fff; border-radius: 16px; padding: 24px 32px; box-shadow: 0 8px 30px rgba(0,0,0,.18); display: flex; flex-direction: column; align-items: center; gap: 14px; font-size: 17px; font-weight: 700; color: #1a1a1a; }
+  .spin { width: 42px; height: 42px; border: 5px solid #d8f3e3; border-top-color: #06C755; border-radius: 50%; animation: sp .8s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  /* 下單成功視窗 */
+  #done { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 30; display: none; align-items: center; justify-content: center; padding: 20px; }
+  #done .dlg { background: #fff; border-radius: 16px; width: 100%; max-width: 380px; padding: 22px 18px 16px; text-align: center; }
+  #done .ok-ic { width: 64px; height: 64px; border-radius: 50%; background: #06C755; color: #fff; font-size: 38px; line-height: 64px; margin: 0 auto 10px; }
+  #done h2 { margin: 0 0 4px; font-size: 20px; }
+  #done .list { text-align: left; margin: 14px 0; max-height: 40vh; overflow-y: auto; }
+  #done .row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid #eee; }
+  #done .row img { width: 48px; height: 48px; border-radius: 8px; object-fit: cover; background: #e9e8e2; }
+  #done .row b { font-size: 17px; margin-left: auto; }
+  .flash { animation: fl 2.4s ease-out; }
+  @keyframes fl { 0%, 40% { background: #EAF3DE; } 100% { background: transparent; } }
 
-const TZ = 'Asia/Tokyo';
-const PROP = PropertiesService.getScriptProperties();
+  /* ===== 電腦版（螢幕寬度 760px 以上）：商品多欄，「我的訂單」放右邊側欄 ===== */
+  @media (min-width: 760px) {
+    header { padding: 14px max(24px, calc((100% - 1200px) / 2 + 24px)); }
+    main { max-width: 1200px; margin: 0 auto; padding: 20px 24px 100px; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; align-items: start; }
+    .grid { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
+    .side { position: sticky; top: 72px; max-height: calc(100vh - 160px); overflow-y: auto; }
+    .side .box { margin-top: 0 !important; }
+    .bar { display: flex; justify-content: center; }
+    .bar .btn { max-width: 480px; }
+    #toast { left: 50%; right: auto; width: 460px; transform: translateX(-50%); }
+    .box.bind { max-width: 480px; margin: 40px auto; }
+  }
+</style>
+</head>
+<body>
+<header><span>今日連線商品</span><span class="who" id="who"></span></header>
+<main id="app"><div class="center">載入中…</div></main>
+<div class="bar" id="bar" style="display:none"><button class="btn" id="submit">送出訂單</button></div>
+<div id="toast" class="banner"></div>
+<div id="busy"><div class="bx"><div class="spin"></div><div id="busyText">處理中…</div></div></div>
+<div id="done"><div class="dlg"><div class="ok-ic">✓</div><h2 id="doneTitle">下單成功</h2><div class="muted" id="doneSub"></div>
+  <div class="list" id="doneList"></div><button class="btn" id="doneOk">好</button></div></div>
 
+<script>
+// ===== 設定：只要改這兩行 =====
 const LIFF_ID = '2009296855-h6x6FV1n';
-const LOGIN_CHANNEL_ID = '2009296855';                        // LIFF 所在的 LINE Login channel
-const AZ_SHEET_ID = '16To-pUrLXQFuRtKfeoR1AZih8FPlr7MZngRUdcj6kRo'; // AZ入庫資料（群組設定、客戶資訊）
-const ORDER_BOOK_ID = '1FkmOPg4Xw3m8slORuEgK20La9XFJzycPkmTAWXwPY9w'; // 客戶訂單總表（締切時把結果寫進去）
-const ORDER_BOOK_SHEET = '客戶訂單總表';
-// 這個 GAS 的部署網址（固定用這一個，更新時用「管理部署作業 → 鉛筆 → 新版本」）
-const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbwjQK4vcmgDAeD-uJ424b-IM3ciq6mvAp1uILcIy27sGWsiBsx8_i7Rz6pAY9oO6DYeKg/exec';
-// 現場核對頁放在 GitHub Pages（放在 GAS 的話，手機登入多個 Google 帳號時會打不開）
-const STAFF_URL = 'https://azlogy.github.io/live/staff.html';
+const API_URL = 'https://script.google.com/macros/s/AKfycbwjQK4vcmgDAeD-uJ424b-IM3ciq6mvAp1uILcIy27sGWsiBsx8_i7Rz6pAY9oO6DYeKg/exec';
+// ===============================
+let S = null;          // 伺服器回傳的狀態
+let cart = {};         // { 商品番号: [ { sub: 子會員, q: 數量, memo: 備註 } ] }（一般會員每個商品只有一行，sub 是空的）
+let idToken = '';
+let busy = false;
+let AG = false;        // 是不是代理帳號
 
-// 工作表（採買人員會看到，用日文）
-const SH = { ITEMS: '商品', ORDERS: '注文', LOG: '変更履歴', MEMBERS: '会員登録' };
-const HEAD = {
-  ITEMS:   ['商品番号', '日付', '登録日時', '写真ID', '写真URL', '価格', '備考', '状態', '登録者', '購入数', '変更あり', '品名', '品名(日)', 'JAN', '税抜価格', '税率', '値札価格', '値札区分', '位置'],
-  ORDERS:  ['注文ID', '日付', '商品番号', '会員番号', 'LINE名', 'userId', '数量', '数量内訳', '備考', '状態', '作成日時', '更新日時', '子会員', '総表転記', '写真保存'],
-  LOG:     ['日時', '種類', '会員番号', 'LINE名', '商品番号', '内容'],
-  MEMBERS: ['LINE名', '会員番号', '登録日時', 'userId']
-};
-// 商品「状態」
-const ST = { TODO: '未処理', DONE: '購入済', PART: '一部', NG: '欠品', DEL: '削除', WAIT: '解析中' };
-
-/* =====================================================================
- * 初次設定：手動執行一次 setup()（之後改版也可以再跑，不會刪資料）
- * ===================================================================== */
-function setup() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  ensureSheet_(ss, SH.ITEMS, HEAD.ITEMS);
-  ensureSheet_(ss, SH.ORDERS, HEAD.ORDERS);
-  ensureSheet_(ss, SH.LOG, HEAD.LOG);
-  ensureSheet_(ss, SH.MEMBERS, HEAD.MEMBERS);
-
-  if (!PROP.getProperty('PHOTO_FOLDER_ID')) {
-    PROP.setProperty('PHOTO_FOLDER_ID', DriveApp.createFolder('現場連線_商品写真').getId());
-  }
-  Logger.log('設定完成');
-  Logger.log('現場核對頁網址：' + STAFF_URL);
-}
-
-// 部署完成後執行這個，Log 會印出現場核對頁的網址
-function showStaffUrl() {
-  Logger.log(STAFF_URL);
-}
-
-function ensureSheet_(ss, name, headers) {
-  let sh = ss.getSheetByName(name);
-  if (!sh) sh = ss.insertSheet(name);
-  const lastCol = Math.max(sh.getLastColumn(), 1);
-  const cur = sh.getLastRow() ? sh.getRange(1, 1, 1, lastCol).getValues()[0] : [];
-  headers.forEach(h => {
-    if (cur.indexOf(h) < 0) {
-      const col = cur.filter(String).length + 1;
-      sh.getRange(1, col).setValue(h).setFontWeight('bold');
-      cur[col - 1] = h;
-    }
-  });
-  sh.setFrozenRows(1);
-  return sh;
-}
-
-/* =====================================================================
- * 入口
- * ===================================================================== */
-function doGet(e) {
-  const p = (e && e.parameter) || {};
-  // 客人的下單頁放在 GitHub Pages（https://azlogy.github.io/live/），這裡只提供現場核對頁
-  if (p.page !== 'staff') {
-    return HtmlService.createHtmlOutput('<p style="font-size:18px;padding:24px;font-family:sans-serif">請從 LINE 的連結打開下單頁。</p>')
-      .addMetaTag('viewport', 'width=device-width, initial-scale=1');
-  }
-  const t = HtmlService.createTemplateFromFile('staff');
-  t.apiUrl = ScriptApp.getService().getUrl();
-  return t.evaluate()
-    .setTitle('現場確認')
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=1')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-}
-
-function doPost(e) {
-  let body;
-  try { body = JSON.parse(e.postData.contents); } catch (err) { return text_('OK'); }
-
-  // 網頁（下單頁／核對頁）放在別的主機時，用 fetch 打進來
-  if (body.action) {
-    return ContentService.createTextOutput(JSON.stringify(api(body))).setMimeType(ContentService.MimeType.JSON);
-  }
-
-  // LINE Webhook
-  (body.events || []).forEach(ev => {
-    try {
-      handleEvent_(ev);
-    } catch (err) {
-      notifyAdmin_('handleEvent 錯誤：' + err.message + '\n' + (err.stack || '') + '\n事件：' + JSON.stringify(ev).slice(0, 500));
-    }
-  });
-  return text_('OK');
-}
-
-function text_(s) { return ContentService.createTextOutput(s); }
-
-/* =====================================================================
- * LINE Webhook：收照片、補價格、管理者登記
- * ===================================================================== */
-function handleEvent_(ev) {
-  if (ev.type !== 'message' || !ev.source || ev.source.type !== 'user') return;
-  const userId = ev.source.userId;
-  const msg = ev.message;
-
-  if (msg.type === 'text') {
-    const t = msg.text.trim();
-    if (/^管理者(登[録錄]|登記)$/.test(t)) {
-      if (!PROP.getProperty('ADMIN_USER_ID')) {
-        PROP.setProperty('ADMIN_USER_ID', userId);
-        reply_(ev.replyToken, '管理者登録完了（管理者登記完成，之後錯誤會私訊給你）');
-      }
-      return;
-    }
-    // 只傳「店舗」→ 回覆選店按鈕（可以先選店再拍照）
-    if (/^(店舗|店鋪|店|みせ|選店)$/.test(t)) {
-      const cur = PROP.getProperty('STORE_' + today_());
-      reply_(ev.replyToken, (cur ? '現在の店舗：' + cur + '\n変更する場合は選んでください👇' : '今日の店舗を選んでください👇'),
-        { items: STORE_CHOICES.map(c => ({ type: 'action', action: { type: 'message', label: c[0], text: '店舗 ' + c[1] } })) });
-      return;
-    }
-    // 「店舗 MDM」「店舗 COSTCO」→ 設定今天在哪家店（決定價格牌要不要加稅）
-    const sm = t.match(/^(店舗|店鋪|店)\s*[:：]?\s*(.+)$/);
-    if (sm) {
-      const store = sm[2].trim();
-      const n = setStore_(store);
-      reply_(ev.replyToken, '本日の店舗：' + store + '\n' + (storeIsIncl_(store) ? '値札は税込として扱います' : '値札は税抜として、税込価格を計算します（食品8%・その他10%）') +
-        (n ? '\n登録済みの ' + n + ' 件の価格を計算し直しました' : ''));
-      return;
-    }
-    // 採買人員傳「確認」→ 回傳現場核對頁的連結
-    if (/^(確認|現場確認|核對|核對頁|staff)$/i.test(t)) {
-      reply_(ev.replyToken, '現場確認ページ（核對頁）\n' + STAFF_URL);
-      return;
-    }
-    const m = t.match(/^(\d{1,3})(-\d{1,2})?\s+(.+)$/);
-    if (m) reply_(ev.replyToken, updateItemInfo_(Number(m[1]), m[3], m[2] || ''));
-    return;
-  }
-
-  if (msg.type === 'image') {
-    // 1. 先存檔、編號、寫進工作表（快）
-    const saved = saveItemPhoto_(msg.id, userId);
-    const no = saved.no;
-    const set = msg.imageSet;
-    try {
-      if (!set) { reply_(ev.replyToken, '受付：' + no + storeAsk_(), storeQuick_()); return; }
-      replyImageSet_(ev, set, no);
-    } finally {
-      // 2. 回覆之後，再設分享、讓 AI 讀品名和價格（慢的放後面，採買人員不用等）
-      finishItemPhoto_(saved);
-    }
-  }
-}
-
-// 一次傳多張：每張的編號記在快取，最後一張到時，等全部存完再一起回覆
-function replyImageSet_(ev, set, no) {
-  {
-
-    // 一次傳多張：每張的編號記在快取，最後一張到時，等全部存完再一起回覆
-    const cache = CacheService.getScriptCache();
-    const key = 'set_' + set.id;
-    const lock = LockService.getScriptLock();
-    lock.waitLock(20000);
-    try {
-      const list = JSON.parse(cache.get(key) || '[]');
-      list.push(no);
-      cache.put(key, JSON.stringify(list), 600);
-    } finally { lock.releaseLock(); }
-
-    if (set.index === set.total) {
-      let list = [];
-      for (let i = 0; i < 50; i++) {           // 最多等約 25 秒（每 0.5 秒看一次）
-        list = JSON.parse(cache.get(key) || '[]');
-        if (list.length >= set.total) break;
-        Utilities.sleep(500);
-      }
-      list.sort();
-      const range = list.length > 1 ? list[0] + '〜' + list[list.length - 1].slice(-2) : (list[0] || '');
-      if (list.length >= set.total) {
-        reply_(ev.replyToken, '写真 ' + list.length + ' 枚を受け付けました（' + range + '）' + storeAsk_(), storeQuick_());
-      } else {
-        // 等太久還沒全部存完：不代表失敗（通常只是還在處理），所以不叫採買人員重傳；真的失敗會私訊管理者
-        reply_(ev.replyToken, '写真 ' + set.total + ' 枚を受け付けました（' + list.length + ' 枚登録済み、残りは処理中です）' + storeAsk_(), storeQuick_());
-      }
-    }
-  }
-}
-
-function saveItemPhoto_(messageId, userId) {
-  // 1. 從 LINE 下載照片（每張各自進行，不用排隊）
-  const res = UrlFetchApp.fetch('https://api-data.line.me/v2/bot/message/' + messageId + '/content', {
-    headers: { Authorization: 'Bearer ' + PROP.getProperty('LINE_TOKEN') }, muteHttpExceptions: true
-  });
-  if (res.getResponseCode() !== 200) {
-    throw new Error('下載照片失敗 HTTP ' + res.getResponseCode() + '：' + res.getContentText().slice(0, 200));
-  }
-  const name = cachedDisplayName_(userId);
-  const today = today_();
-
-  // 2. 只有「取號碼」要排隊（約 0.1 秒），避免一次傳很多張時號碼重複
-  let seq, folderId;
-  const lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
-    seq = nextSeq_(today);
-    folderId = dayFolderId_(today);
-  } finally { lock.releaseLock(); }
-  const no = Utilities.formatDate(new Date(), TZ, 'MMdd') + '-' + String(seq).padStart(2, '0');
-  ensureHeadersOnce_();
-
-  // 3. 存 Drive、寫進試算表（品名、價格之後再補）
-  const blob = res.getBlob();
-  const file = DriveApp.getFolderById(folderId).createFile(blob.setName(no + '.jpg'));
-  const url = 'https://drive.google.com/thumbnail?id=' + file.getId() + '&sz=w800';
-  appendRow_(SH.ITEMS, {
-    '商品番号': no, '日付': "'" + today, '登録日時': now_(), '写真ID': file.getId(), '写真URL': url,
-    // AI 讀完之前先標「解析中」，客人看不到（AI 可能會把一張照片拆成好幾個商品）
-    '状態': PROP.getProperty('GEMINI_API_KEY') ? ST.WAIT : ST.TODO, '登録者': name, '購入数': 0, '変更あり': ''
-  });
-  return { no: no, file: file, blob: blob, today: today, url: url, staff: name };
-}
-
-// 回覆採買人員之後才做：設公開分享、AI 讀品名和價格、補進工作表
-function finishItemPhoto_(saved) {
-  try {
-    saved.file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-  } catch (err) {
-    notifyAdmin_('照片無法設成公開分享（可能是 Workspace 分享限制）：' + err.message);
-  }
-  let list = [];
-  try { list = aiProducts_(saved.blob, saved.no); }
-  finally {
-    // 不管 AI 成功或失敗，最後一定要把「解析中」改掉，客人才看得到
-    applyAiResult_(saved, list);
-  }
-}
-
-// 把 AI 結果寫回去：1 個商品 → 補在原本那一行；好幾個 → 拆成 03-1、03-2…（同一張照片）
-function applyAiResult_(saved, list) {
-  const row = findItemRow_(saved.today, saved.no);
-  if (!row) return;
-  const fill = (ai) => {
-    const pr = taxIncluded_(ai, saved.today);
-    return {
-      '品名': ai.zh || '', '品名(日)': ai.ja || '', 'JAN': ai.jan ? "'" + ai.jan : '', '位置': ai.pos || '',
-      '値札価格': ai.price || '', '値札区分': ai.price ? ai.tax + (ai.food ? '/food' : '') : '',
-      '価格': pr.incl || '', '税抜価格': pr.excl || '', '税率': pr.rate
-    };
-  };
-  if (list.length <= 1) {
-    setCells_(SH.ITEMS, row, Object.assign({ '状態': ST.TODO }, list.length ? fill(list[0]) : {}));
-    return;
-  }
-  // 第一個商品用原本那一行（改成 03-1），其他新增
-  setCells_(SH.ITEMS, row, Object.assign({ '商品番号': saved.no + '-1', '状態': ST.TODO }, fill(list[0])));
-  const photoId = saved.file.getId();
-  list.slice(1).forEach((ai, i) => {
-    appendRow_(SH.ITEMS, Object.assign({
-      '商品番号': saved.no + '-' + (i + 2), '日付': "'" + saved.today, '登録日時': now_(), '写真ID': photoId, '写真URL': saved.url,
-      '状態': ST.TODO, '登録者': saved.staff, '購入数': 0, '変更あり': ''
-    }, fill(ai)));
-  });
-}
-
-function findItemRow_(date, no) {
-  const r = readAll_(SH.ITEMS).find(x => x['日付'] === date && x['商品番号'] === no);
-  return r ? r._row : 0;
-}
-
-/* ---------- 含稅價 ----------
- * 價格牌寫「税込」→ 直接用；寫「税抜」→ 加稅；看不出來 → 看今天的店（COSTCO 含稅，其他當未稅）
- * 稅率：食品・飲料 8%（輕減稅率），其他 10%；小數點以下捨去
- */
-const TAX_INCL_STORES = ['COSTCO', 'コストコ', '好市多', '税込'];
-// 選店按鈕（顯示文字、設定值）
-const STORE_CHOICES = [['MDM', 'MDM'], ['COSTCO', 'COSTCO'], ['他店（税込）', '他店（税込）'], ['他店（税抜）', '他店（税抜）']];
-function storeIsIncl_(store) { store = String(store || '').toUpperCase(); return TAX_INCL_STORES.some(x => store.indexOf(x.toUpperCase()) >= 0); }
-function taxIncluded_(ai, today) {
-  if (!ai.price) return { incl: 0, excl: 0, rate: '' };
-  const rate = ai.food ? 0.08 : 0.10;
-  const incl = ai.tax === 'incl' || (ai.tax === 'unknown' && storeIsIncl_(PROP.getProperty('STORE_' + today)));
-  if (incl) return { incl: ai.price, excl: Math.round(ai.price / (1 + rate)), rate: (rate * 100) + '%' };
-  return { incl: Math.floor(ai.price * (1 + rate)), excl: ai.price, rate: (rate * 100) + '%' };
-}
-
-/* ---------- AI 看照片取品名（Gemini） ----------
- * 指令碼屬性：GEMINI_API_KEY（跟小助手同一把就可以）
- *            GEMINI_MODEL（可不填，預設 gemini-2.5-flash）
- * 失敗時品名留空，私訊管理者，不影響上架
- */
-function aiProducts_(blob, no) {
-  const key = PROP.getProperty('GEMINI_API_KEY');
-  if (!key) return [];
-  const model = PROP.getProperty('GEMINI_MODEL') || 'gemini-2.5-flash';
-  const prompt =
-    '這是在日本商店（MDM、COSTCO、藥妝店等）拍的貨架照片。照片裡可能有 1 個或好幾個商品，每個商品下面通常有自己的價格牌。\n' +
-    '請「以價格牌為單位」列出照片裡每一個商品（同一個商品不同顏色、口味，價格牌不同就算不同商品），由左到右、由上到下排序，最多 12 個。只回傳 JSON：\n' +
-    '{"items":[{' +
-    '"pos":"在照片裡的位置，例如 左、中、右、上段左、下段右",' +
-    '"zh":"繁體中文品名：品牌＋商品名稱＋顏色/口味/規格，30 字以內",' +
-    '"ja":"日文品名：參考包裝和價格牌上的字，40 字以內",' +
-    '"jan":"價格牌或包裝上印的 JAN 條碼數字（8 或 13 碼），看不清楚就給空字串",' +
-    '"price":價格（只要數字）。價格牌上有「MDM価格」時一定用 MDM価格 那個大字；沒有就用最主要的售價；看不到給 0,' +
-    '"tax":"價格寫「税込」給 incl，寫「税抜／+税／本体価格」給 excl，MDM価格給 unknown，看不出來給 unknown",' +
-    '"food":食品或飲料（酒類除外）給 true，其他給 false' +
-    '}]}\n' +
-    '規則：價格牌要對到它正上方的商品；看不清楚的品牌不要猜，寫看得到的外觀；照片裡只有一個商品就只回一筆；完全看不出商品就回 {"items":[]}。';
-  try {
-    const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + key, {
-      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
-      payload: JSON.stringify({
-        contents: [{ parts: [
-          { inline_data: { mime_type: blob.getContentType() || 'image/jpeg', data: Utilities.base64Encode(blob.getBytes()) } },
-          { text: prompt }
-        ]}],
-        generationConfig: { temperature: 0.2, responseMimeType: 'application/json' }
-      })
-    });
-    if (res.getResponseCode() !== 200) throw new Error('HTTP ' + res.getResponseCode() + '：' + res.getContentText().slice(0, 200));
-    const j = JSON.parse(res.getContentText());
-    const txt = (((j.candidates || [])[0] || {}).content || {}).parts.map(p => p.text || '').join('');
-    const o = JSON.parse(txt.replace(/^```json|```$/g, '').trim());
-    const arr = Array.isArray(o) ? o : (o.items || (o.zh ? [o] : []));
-    return arr.slice(0, 12).map(x => {
-      const jan = String(x.jan || '').replace(/\D/g, '');
-      const price = Math.round(Number(String(x.price || 0).replace(/[^\d.]/g, '')) || 0);
-      return {
-        pos: String(x.pos || '').trim().slice(0, 10),
-        zh: String(x.zh || '').trim().slice(0, 60),
-        ja: String(x.ja || '').trim().slice(0, 80),
-        jan: (jan.length === 8 || jan.length === 13) ? jan : '',
-        price: price > 0 && price < 10000000 ? price : 0,
-        tax: ['incl', 'excl'].indexOf(x.tax) >= 0 ? x.tax : 'unknown',
-        food: x.food === true || x.food === 'true'
-      };
-    }).filter(x => x.zh || x.ja || x.price);
-  } catch (err) {
-    notifyAdmin_('AI 讀商品失敗（' + no + '）：' + err.message);
-    return [];
-  }
-}
-
-// 今天的下一個號碼：記在指令碼屬性 SEQ_日期（每天自動從 1 開始）
-// 同一天想讓號碼重新從 01 開始：刪掉「商品」裡今天的行，再到指令碼屬性刪掉 SEQ_今天日期
-function nextSeq_(today) {
-  const key = 'SEQ_' + today;
-  let n = Number(PROP.getProperty(key));
-  if (!n) {
-    // 今天第一次：以工作表裡今天已有的筆數為準，順便清掉以前日期的計數
-    const sh = sheet_(SH.ITEMS);
-    const nos = sh.getLastRow() > 1 ? sh.getRange(2, 1, sh.getLastRow() - 1, 2).getDisplayValues() : [];
-    n = new Set(nos.filter(r => r[1] === today).map(r => String(r[0]).slice(0, 7))).size;   // 一張照片拆成 03-1、03-2 也只算一張
-    Object.keys(PROP.getProperties()).forEach(k => {
-      if ((k.indexOf('SEQ_') === 0 && k !== key) || (k.indexOf('STORE_') === 0 && k !== 'STORE_' + today)) PROP.deleteProperty(k);
-    });
-  }
-  n++;
-  PROP.setProperty(key, String(n));
-  return n;
-}
-
-// 今天的照片資料夾（記在快取，不用每張都去 Drive 找）
-function dayFolderId_(today) {
-  const cache = CacheService.getScriptCache();
-  const hit = cache.get('dayfolder_' + today);
-  if (hit) return hit;
-  const root = DriveApp.getFolderById(PROP.getProperty('PHOTO_FOLDER_ID'));
-  const it = root.getFoldersByName(today);
-  const id = (it.hasNext() ? it.next() : root.createFolder(today)).getId();
-  cache.put('dayfolder_' + today, id, 21600);
-  return id;
-}
-
-function cachedDisplayName_(userId) {
-  const cache = CacheService.getScriptCache();
-  const hit = cache.get('name_' + userId);
-  if (hit !== null) return hit;
-  const n = getDisplayName_(userId);
-  cache.put('name_' + userId, n, 21600);
-  return n;
-}
-
-function updateItemInfo_(seq, rest, subNo) {
-  const no = Utilities.formatDate(new Date(), TZ, 'MMdd') + '-' + String(seq).padStart(2, '0') + (subNo || '');
-  const item = loadItems_(today_()).find(i => i.no === no);
-  if (!item) return no + ' が見つかりません';
-  const pm = rest.match(/([\d,]+)\s*円/);
-  const price = pm ? Number(pm[1].replace(/,/g, '')) : '';
-  const memo = rest.replace(/([\d,]+)\s*円/, '').trim();
-  const patch = {};
-  if (price) { patch['価格'] = price; patch['税抜価格'] = ''; patch['税率'] = '手入力'; }
-  if (memo) patch['備考'] = memo;
-  setCells_(SH.ITEMS, item.row, patch);
-  return no + ' 更新しました' + (price ? '　価格 ' + price + '円' : '') + (memo ? '　備考 ' + memo : '');
-}
-
-/* =====================================================================
- * API（下單頁、核對頁都呼叫這裡）
- *
- * 客人規則：
- *  - 截止後不能再動
- *  - 欠品的商品不能下單、不能追加
- *  - 已購入（購入済／一部）的商品：不能減少、不能取消，只能追加
- *  - 追加的數量排在後面（缺貨時依時間分配，先下單的先拿）
- *  - 任何追加、改單、取消都會在核對頁標「変更あり」
- * ===================================================================== */
+// 呼叫後端（GAS 的 doPost）
 function api(req) {
+  req.idToken = idToken;
+  // 不加 Content-Type（預設 text/plain），瀏覽器就不會先送 CORS 預檢，GAS 才收得到
+  return fetch(API_URL, { method: 'POST', body: JSON.stringify(req) }).then(r => r.json());
+}
+
+function toast(text, good) {
+  const t = document.getElementById('toast');
+  t.textContent = text; t.className = 'banner ' + (good ? 'ok' : 'ng'); t.style.display = 'block';
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = 'none', 3500);
+}
+
+// 價格顯示：2138 → ¥2,138
+function yen(v) { const n = Number(String(v || '').replace(/[^\d.]/g, '')); return n > 0 ? '¥' + Math.floor(n).toLocaleString('ja-JP') : ''; }
+function num(v) { return Number(String(v || '').replace(/[^\d.]/g, '')) || 0; }
+
+// 一覧は小さい画像（100 枚でも軽い）；拡大時は大きい画像
+function sm(u) { return String(u || '').replace(/([?&]sz=)w\d+/, '$1w400'); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+function showBusy(text) {
+  document.getElementById('busyText').textContent = text || '處理中…';
+  document.getElementById('busy').style.display = text === false ? 'none' : 'flex';
+}
+
+// 下單成功的大視窗：列出這次送出的商品
+function showDone(title, sub, rows) {
+  document.getElementById('doneTitle').textContent = title;
+  document.getElementById('doneSub').textContent = sub || '';
+  document.getElementById('doneList').innerHTML = rows.map(r =>
+    `<div class="row"><img src="${esc(r.url || '')}" alt=""><div>${esc(r.no.slice(5))} 號${r.sub ? ` <span class="pill sb">${esc(r.sub)}</span>` : ''}${r.tag ? ` <span class="pill ok">${esc(r.tag)}</span>` : ''}${r.name ? `<div class="muted" style="color:#555">${esc(r.name)}</div>` : ''}${r.memo ? `<div class="muted">${esc(r.memo)}</div>` : ''}</div><b>×${r.q}</b></div>`).join('');
+  document.getElementById('done').style.display = 'flex';
+}
+document.getElementById('doneOk').onclick = () => {
+  document.getElementById('done').style.display = 'none';
+  // 捲到「我的訂單」並閃一下，讓客人看到訂單在這裡
+  const box = document.getElementById('mineBox');
+  if (box) { box.scrollIntoView({ behavior: 'smooth', block: 'start' }); box.classList.remove('flash'); void box.offsetWidth; box.classList.add('flash'); }
+};
+
+async function call(req, quiet) {
+  if (busy) return; busy = true;
+  if (!quiet) showBusy(req.action === 'submit' ? '送出中…' : req.action === 'bind' ? '確認中…' : '處理中…');
   try {
-    ensureHeadersOnce_();
-    const a = req.action;
-    if (a.indexOf('staff_') === 0) {
-      if (a === 'staff_get') return staffGet_();
-      if (a === 'staff_store') { const n = setStore_(String(req.store || '').slice(0, 30)); const r = staffGet_(); r.msg = '店舗：' + req.store + (n ? '（' + n + ' 件の価格を再計算）' : ''); return r; }
-      if (a === 'staff_set') return staffSet_(req.no, req.act);
-      if (a === 'staff_close') return staffClose_(req.force);
-      if (a === 'staff_reopen') { PROP.deleteProperty('CLOSED_' + today_()); return staffGet_(); }
-      return { ok: false, msg: 'unknown' };
-    }
-
-    const user = verifyUser_(req.idToken);
-    if (!user) return { ok: false, msg: '登入已過期，請關掉頁面重新打開', relogin: true };
-    if (a === 'init') return custInit_(user);
-    if (a === 'bind') return custBind_(user, req.code);
-    if (a === 'submit') return custSubmit_(user, req.cart || []);
-    if (a === 'update') return custUpdate_(user, req.orderId, req.op, req.memo);
-    return { ok: false, msg: 'unknown' };
-  } catch (err) {
-    notifyAdmin_('API 錯誤（' + req.action + '）：' + err.message + '\n' + (err.stack || ''));
-    return { ok: false, msg: '系統忙碌中，請稍後再試' };
-  }
-}
-
-// 新版加了欄位（例如「子会員」）時，自動補上標題，不用再手動跑 setup()
-function ensureHeadersOnce_() {
-  const cache = CacheService.getScriptCache();
-  if (cache.get('hdr_v8')) return;
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  ensureSheet_(ss, SH.ORDERS, HEAD.ORDERS);
-  ensureSheet_(ss, SH.ITEMS, HEAD.ITEMS);
-  cache.put('hdr_v8', '1', 21600);
-}
-
-/* ---------- 客人身分：用 LIFF 的 ID Token 向 LINE 驗證，不相信網頁傳來的 userId ---------- */
-function verifyUser_(idToken) {
-  if (!idToken) return null;
-  const cache = CacheService.getScriptCache();
-  const key = 'tok_' + Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, idToken));
-  const hit = cache.get(key);
-  if (hit) return JSON.parse(hit);
-  const res = UrlFetchApp.fetch('https://api.line.me/oauth2/v2.1/verify', {
-    method: 'post', payload: { id_token: idToken, client_id: LOGIN_CHANNEL_ID }, muteHttpExceptions: true
-  });
-  if (res.getResponseCode() !== 200) return null;
-  const j = JSON.parse(res.getContentText());
-  const user = { uid: j.sub, name: j.name || '' };
-  cache.put(key, JSON.stringify(user), 600);
-  return user;
-}
-
-/* ---------- 客人：開頁面 ---------- */
-function custInit_(user) {
-  const date = today_();
-  const member = findMember_(user.uid);
-  const items = loadItems_(date);
-  const orders = loadOrders_(date);
-  const closed = isClosed_(date);
-  const alloc = allocAll_(items, orders);
-
-  const agency = member ? agencyInfo_(member) : null;
-  return {
-    ok: true, date: date, closed: closed, name: user.name,
-    member: member,
-    agency: agency,                                   // 代理：{ subs: [{code, name}] }；一般會員：null
-    items: items.map(i => ({ no: i.no, pos: i.pos, name: i.name, url: i.url, price: i.price, memo: i.memo, sold: i.status === ST.NG })),
-    mine: orders.filter(o => o.uid === user.uid).map(o => {
-      const it = items.find(i => i.no === o.no) || {};
-      return {
-        id: o.id, no: o.no, sub: o.sub, qty: o.qty, parts: o.segs.map(s => s.q), memo: o.memo, cancelled: o.status === '取消',
-        url: it.url, name: it.name || '', itemStatus: it.status || '', got: o.status === '取消' ? 0 : (alloc[o.id] !== undefined ? alloc[o.id] : null)
-      };
-    })
-  };
-}
-
-/* ---------- 客人：綁定會員編號 ---------- */
-function custBind_(user, code) {
-  code = String(code || '').trim().toUpperCase();
-  if (!code) return { ok: false, msg: '請輸入會員編號' };
-  if (memberCodes_().indexOf(code) < 0) return { ok: false, msg: '找不到這個會員編號，請確認後再輸入' };
-
-  const lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
-    const rows = readAll_(SH.MEMBERS);
-    const ex = rows.find(r => r.userId === user.uid);
-    if (ex) setCells_(SH.MEMBERS, ex._row, { '会員番号': code, 'LINE名': user.name, '登録日時': now_() });
-    else appendRow_(SH.MEMBERS, { 'LINE名': user.name, '会員番号': code, '登録日時': now_(), 'userId': user.uid });
-    CacheService.getScriptCache().remove('mem_' + user.uid);
-  } finally { lock.releaseLock(); }
-  return custInit_(user);
-}
-
-/* ---------- 客人：送出（已有的商品變成追加） ---------- */
-function custSubmit_(user, cart) {
-  const member = findMember_(user.uid);
-  if (!member) return { ok: false, msg: '請先輸入會員編號' };
-  const date = today_();
-  if (isClosed_(date)) return { ok: false, msg: '本場已截止收單' };
-
-  const lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  let added = 0, created = 0;
-  const skipped = [];
-  const agency = agencyInfo_(member);
-  const known = agency ? agency.subs.map(x => x.code) : [];
-  const newSubs = [];
-  // 代理：每一筆都一定要有子會員；可以是清單裡的，也可以是新的（但格式要對）
-  if (agency) {
-    for (const c of cart) {
-      const sub = String(c.sub || '').trim().toUpperCase();
-      if (!sub) return { ok: false, msg: '代理下單時，每一筆都要填子會員' };
-      if (known.indexOf(sub) < 0) {
-        if (!subFormatOk_(member, sub)) return { ok: false, msg: sub + ' 不是 ' + member + ' 的子會員格式，請確認（例如 ' + subExample_(member) + '）' };
-        if (newSubs.indexOf(sub) < 0) newSubs.push(sub);
-      }
-      c.sub = sub;
-    }
-  }
-  try {
-    const items = loadItems_(date);
-    const orders = loadOrders_(date);
-    cart.forEach(c => {
-      const q = Math.floor(Number(c.q));
-      if (!(q >= 1 && q <= 99)) return;
-      const it = items.find(i => i.no === c.no);
-      if (!it) return;
-      if (it.status === ST.NG) { skipped.push(c.no); return; }
-      const memo = String(c.memo || '').trim().slice(0, 100);
-      const sub = agency ? String(c.sub).toUpperCase() : '';
-      const who = member + (sub ? '/' + sub : '');
-      // 同一個人、同一個商品、同一個子會員 → 算追加
-      const ex = orders.find(o => o.uid === user.uid && o.no === c.no && (o.sub || '') === sub && o.status !== '取消');
-      if (ex) {
-        ex.segs.push({ q: q, t: Date.now() });
-        ex.qty += q;
-        const patch = { '数量': ex.qty, '数量内訳': JSON.stringify(ex.segs), '更新日時': now_() };
-        if (memo) patch['備考'] = memo;
-        setCells_(SH.ORDERS, ex._row, patch);
-        log_('追加', who, user.name, c.no, '+' + q + '（計 ' + ex.qty + '）');
-        added++;
-      } else {
-        appendRow_(SH.ORDERS, {
-          '注文ID': Utilities.getUuid().slice(0, 8), '日付': "'" + date, '商品番号': c.no, '会員番号': member,
-          'LINE名': user.name, 'userId': user.uid, '数量': q, '数量内訳': JSON.stringify([{ q: q, t: Date.now() }]),
-          '備考': memo, '状態': '有効', '作成日時': now_(), '更新日時': now_(), '子会員': sub
-        });
-        log_('新規', who, user.name, c.no, '×' + q + (memo ? '（' + memo + '）' : ''));
-        created++;
-      }
-      markIncrease_(it);
-    });
-  } finally { lock.releaseLock(); }
-
-  if (newSubs.length) {
-    log_('新子会員', member, user.name, '', newSubs.join('、') + '（客戶資訊にありません）');
-    notifyAdmin_('現場連線：代理 ' + member + ' 用了新的子會員 ' + newSubs.join('、') + '，「客戶資訊」裡還沒有，請記得補上');
-  }
-
-  const r = custInit_(user);
-  r.msg = '已送出' + (created ? '：新訂單 ' + created + ' 項' : '') + (added ? '　追加 ' + added + ' 項' : '') +
-    (skipped.length ? '\n' + skipped.join('、') + ' 已售完，沒有下單' : '');
-  return r;
-}
-
-/* ---------- 客人：我的訂單 −／＋／備註／取消 ---------- */
-function custUpdate_(user, orderId, op, memo) {
-  const date = today_();
-  if (isClosed_(date)) return { ok: false, msg: '本場已截止，不能再修改' };
-  const member0 = findMember_(user.uid);
-  let member = member0;
-
-  const lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  let msg = '';
-  try {
-    const items = loadItems_(date);
-    const o = loadOrders_(date).find(x => x.id === orderId && x.uid === user.uid);
-    if (!o || o.status === '取消') return { ok: false, msg: '找不到這筆訂單' };
-    if (o.sub) member = member0 + '/' + o.sub;       // 變動紀錄標出子會員
-    const it = items.find(i => i.no === o.no);
-    const bought = it && (it.status === ST.DONE || it.status === ST.PART);
-
-    if (op === '+') {
-      if (it.status === ST.NG) return { ok: false, msg: '這個商品已售完' };
-      o.segs.push({ q: 1, t: Date.now() }); o.qty++;
-      setCells_(SH.ORDERS, o._row, { '数量': o.qty, '数量内訳': JSON.stringify(o.segs), '更新日時': now_() });
-      log_('追加', member, user.name, o.no, '+1（計 ' + o.qty + '）');
-      markIncrease_(it);
-      msg = '已追加 1 個，追加的部分排在後面';
-    } else if (op === '-' || op === 'x') {
-      if (bought) return { ok: false, msg: '採買人員已經幫你買了，要減少或取消請聯絡客服' };
-      if (op === '-') {
-        if (o.qty <= 1) return { ok: false, msg: '數量最少 1 個，不要的話請按取消' };
-        const last = o.segs[o.segs.length - 1];
-        last.q--; if (!last.q) o.segs.pop();
-        o.qty--;
-        setCells_(SH.ORDERS, o._row, { '数量': o.qty, '数量内訳': JSON.stringify(o.segs), '更新日時': now_() });
-        log_('変更', member, user.name, o.no, '−1（計 ' + o.qty + '）');
-        msg = '數量已改成 ' + o.qty;
-      } else {
-        setCells_(SH.ORDERS, o._row, { '状態': '取消', '更新日時': now_() });
-        log_('取消', member, user.name, o.no, '×' + o.qty);
-        msg = '已取消';
-      }
-      setCells_(SH.ITEMS, it.row, { '変更あり': '●' });
-    } else if (op === 'memo') {
-      const v = String(memo || '').trim().slice(0, 100);
-      setCells_(SH.ORDERS, o._row, { '備考': v, '更新日時': now_() });
-      log_('変更', member, user.name, o.no, '備考→' + (v || 'なし'));
-      setCells_(SH.ITEMS, it.row, { '変更あり': '●' });
-      msg = '備註已更新';
+    const r = await api(req);
+    if (!r.ok) {
+      toast(r.msg || '發生錯誤', false);
+      if (r.relogin) setTimeout(() => { liff.logout(); liff.login({ redirectUri: location.href }); }, 1500);
     } else {
-      return { ok: false, msg: 'unknown' };
+      S = r; render();
+      if (r.msg && !quiet) toast(r.msg, true);
     }
-  } finally { lock.releaseLock(); }
-
-  const r = custInit_(user);
-  r.msg = msg;
-  return r;
+    return r;
+  } catch (e) {
+    toast('連線失敗，請稍後再試', false);
+  } finally { busy = false; showBusy(false); }
 }
 
-// 需求變多時：已購入的商品退回「未処理」並標記，現場人員才會知道要補買
-function markIncrease_(it) {
-  const patch = {};
-  if (it.status === ST.DONE || it.status === ST.PART) { patch['状態'] = ST.TODO; patch['変更あり'] = '●'; it.status = ST.TODO; }
-  else if (it.status === ST.TODO && it.got > 0) patch['変更あり'] = '●';
-  if (Object.keys(patch).length) setCells_(SH.ITEMS, it.row, patch);
-}
+function render() {
+  const app = document.getElementById('app');
+  document.getElementById('who').textContent = S.member ? S.member + '　' + (S.name || '') : '';
 
-/* ---------- 現場核對頁 ---------- */
-function staffGet_() {
-  const date = today_();
-  const items = loadItems_(date);
-  const orders = loadOrders_(date).filter(o => o.status !== '取消');
-  const alloc = allocAll_(items, orders);
-  const logs = readAll_(SH.LOG).filter(r => String(r['日時']).indexOf(date) === 0).slice(-8).reverse()
-    .map(r => ({ time: String(r['日時']).slice(11, 16), type: r['種類'], code: r['会員番号'], name: r['LINE名'], no: r['商品番号'], text: r['内容'] }));
-
-  return {
-    ok: true, date: date, closed: isClosed_(date), logs: logs,
-    analyzing: readAll_(SH.ITEMS).filter(r => r['日付'] === date && r['状態'] === ST.WAIT).length,
-    store: PROP.getProperty('STORE_' + date) || '', stores: STORE_CHOICES.map(c => c[1]),
-    items: items.map(i => {
-      const ls = orders.filter(o => o.no === i.no).sort((a, b) => a.segs[0].t - b.segs[0].t);
-      return {
-        no: i.no, pos: i.pos, name: i.name, nameJa: i.nameJa, url: i.url, price: i.price, memo: i.memo, status: i.status, got: i.got, flag: !!i.flag,
-        need: ls.reduce((s, o) => s + o.qty, 0),
-        lines: ls.map(o => ({ code: o.code, sub: o.sub, name: o.name, qty: o.qty, parts: o.segs.map(s => s.q), memo: o.memo, got: alloc[o.id] }))
-      };
-    })
-  };
-}
-
-function staffSet_(no, act) {
-  const date = today_();
-  if (isClosed_(date)) return { ok: false, msg: '締切済です' };
-  const lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
-    const it = loadItems_(date).find(i => i.no === no);
-    if (!it) return { ok: false, msg: '商品が見つかりません' };
-    const need = loadOrders_(date).filter(o => o.no === no && o.status !== '取消').reduce((s, o) => s + o.qty, 0);
-    let st, got;
-    if (act === 'ok') { st = ST.DONE; got = need; }
-    else if (act === 'ng') { st = ST.NG; got = 0; }
-    else if (act === 'pm' || act === 'pp') {
-      let g = (it.status !== ST.TODO || it.got > 0) ? it.got : need;
-      if (it.status === ST.NG) g = 0;
-      g += act === 'pp' ? 1 : -1;
-      g = Math.max(0, Math.min(need, g));
-      if (g >= need && need > 0) { st = ST.DONE; got = need; }
-      else if (g <= 0) { st = ST.NG; got = 0; }
-      else { st = ST.PART; got = g; }
-    } else if (act === 'reset') { st = ST.TODO; got = 0; }
-    else if (act === 'del') {
-      // 傳錯、重複的照片：沒有人訂才能刪；有人訂的請改按「欠品」
-      if (need > 0) return { ok: false, msg: '注文がある商品は削除できません。「欠品」にしてください' };
-      st = ST.DEL; got = 0;
-      log_('削除', '', '', no, '商品を削除');
-    }
-    else return { ok: false, msg: 'unknown' };
-    setCells_(SH.ITEMS, it.row, { '状態': st, '購入数': got, '変更あり': '' });
-  } finally { lock.releaseLock(); }
-  return staffGet_();
-}
-
-function staffClose_(force) {
-  const date = today_();
-  if (isClosed_(date)) return staffGet_();
-  const items = loadItems_(date);
-  const orders = loadOrders_(date).filter(o => o.status !== '取消');
-  const pending = items.filter(i => i.status === ST.TODO && orders.some(o => o.no === i.no));
-  if (pending.length && !force) {
-    return { ok: false, needForce: true, msg: '未処理の商品が ' + pending.length + ' 件あります。このまま締切しますか？' };
-  }
-  PROP.setProperty('CLOSED_' + date, now_());
-  log_('締切', '', '', '', '受付終了');
-
-  // 小助手推播結果到各客人群組
-  const alloc = allocAll_(items, orders);
-  const groups = groupMap_();
-  const byMember = {};
-  orders.forEach(o => (byMember[o.code] = byMember[o.code] || []).push(o));
-  let sent = 0;
-  const noGroup = [];
-  Object.keys(byMember).forEach(code => {
-    const gid = groups[code];
-    if (!gid) { noGroup.push(code); return; }
-    const rows = byMember[code].map(o => {
-      const it = items.find(i => i.no === o.no) || {};
-      return { no: o.no, name: it.name || '', sub: o.sub, url: it.url, memo: o.memo, kind: resultKind_(it.status, o.qty, alloc[o.id]), text: resultText_(it.status, o.qty, alloc[o.id]) };
-    });
-    rows.sort((a, b) => (a.sub || '').localeCompare(b.sub || '') || a.no.localeCompare(b.no));
-    const alt = '現場連線結果 ' + code + '：' + rows.map(r => r.no.slice(5) + (r.sub ? '(' + r.sub + ')' : '') + ' ' + r.text).join('、');
-    const msg = { type: 'flex', altText: alt.slice(0, 380), contents: resultFlex_(code, date, rows) };
-    if (pushMessages_(PROP.getProperty('XZS_TOKEN'), gid, [msg])) sent++;
-  });
-  if (noGroup.length) notifyAdmin_('締切通知：以下會員在「群組設定」找不到群組，沒有發送：' + noGroup.join('、'));
-
-  // 把結果寫進「客戶訂單總表」
-  let moved = 0;
-  try { moved = transferToOrderBook_(date, items, orders, alloc); }
-  catch (err) { notifyAdmin_('寫入客戶訂單總表失敗：' + err.message + '\n' + (err.stack || '')); }
-
-  const r = staffGet_();
-  r.msg = '締切しました。' + sent + ' グループに通知しました' + (noGroup.length ? '（グループなし ' + noGroup.length + ' 件）' : '') +
-    '\n注文総表に ' + moved + ' 件登録しました' + (moved ? '（写真は数分以内に自動保存）' : '');
-  return r;
-}
-
-// 結果分類：用來決定圖卡上的顏色
-function resultKind_(status, qty, got) {
-  if (status === ST.NG) return 'ng';
-  if (status === ST.PART) return got >= qty ? 'ok' : 'part';
-  if (status === ST.DONE) return 'ok';
-  return 'wait';
-}
-
-/* ---------- 締切結果圖卡（Flex Message） ----------
- * 指令碼屬性可選填 LOGO_URL（公司 logo 圖片網址，https），有填就會顯示在標題左邊
- */
-function resultFlex_(code, date, rows) {
-  const COLOR = { ok: '#1E9E5A', part: '#D9822B', ng: '#D64545', wait: '#888888' };
-  const LABEL = { ok: '已買到', part: '部分買到', ng: '缺貨', wait: '確認中' };
-  const MAX = 15;                                    // 一張卡最多列 15 項，避免超過 LINE 的大小限制
-  const shown = rows.slice(0, MAX);
-  const okCount = rows.filter(r => r.kind === 'ok' || r.kind === 'part').length;
-
-  const head = [];
-  const logo = PROP.getProperty('LOGO_URL');
-  if (logo) head.push({ type: 'image', url: logo, size: '36px', aspectMode: 'fit', flex: 0 });
-  head.push({ type: 'box', layout: 'vertical', flex: 1, contents: [
-    { type: 'text', text: '現場連線結果', color: '#FFFFFF', weight: 'bold', size: 'lg' },
-    { type: 'text', text: date.slice(5).replace('-', '/') + '　' + code, color: '#FFFFFFCC', size: 'sm' }
-  ]});
-
-  const body = shown.map((r, i) => ({
-    type: 'box', layout: 'horizontal', spacing: 'md', alignItems: 'center',
-    margin: i ? 'md' : 'none',
-    contents: [
-      r.url ? { type: 'image', url: r.url, size: '60px', aspectMode: 'cover', aspectRatio: '1:1', flex: 0 }
-            : { type: 'box', layout: 'vertical', width: '60px', height: '60px', backgroundColor: '#EEEEEE', contents: [] },
-      { type: 'box', layout: 'vertical', flex: 1, contents: [
-        { type: 'box', layout: 'horizontal', alignItems: 'center', contents: [
-          { type: 'text', text: r.no.slice(5) + ' 號' + (r.sub ? '　' + r.sub : ''), weight: 'bold', size: 'md', flex: 1, wrap: true },
-          // 狀態小標籤（text 不能設底色，所以包一層 box）
-          { type: 'box', layout: 'vertical', flex: 0, backgroundColor: COLOR[r.kind], cornerRadius: '6px',
-            paddingStart: '6px', paddingEnd: '6px', paddingTop: '2px', paddingBottom: '2px',
-            contents: [{ type: 'text', text: LABEL[r.kind], size: 'xs', color: '#FFFFFF' }] }
-        ]},
-        { type: 'text', text: r.name || '（品名なし）', size: 'xs', color: '#555555', wrap: true, maxLines: 2 },
-        { type: 'text', text: r.text, size: 'sm', color: COLOR[r.kind], margin: 'xs', wrap: true }
-      ].concat(r.memo ? [{ type: 'text', text: r.memo, size: 'xs', color: '#999999', wrap: true }] : [])}
-    ]
-  }));
-  if (rows.length > MAX) body.push({ type: 'text', text: '還有 ' + (rows.length - MAX) + ' 項，請到下單頁查看', size: 'sm', color: '#888888', margin: 'md' });
-
-  return {
-    type: 'bubble', size: 'mega',
-    header: { type: 'box', layout: 'horizontal', spacing: 'md', alignItems: 'center', backgroundColor: '#F2668B', paddingAll: '16px', contents: head },
-    body: { type: 'box', layout: 'vertical', paddingAll: '16px', contents: [
-      { type: 'text', text: '共 ' + rows.length + ' 項，買到 ' + okCount + ' 項', size: 'sm', color: '#666666', margin: 'none' },
-      { type: 'separator', margin: 'md' },
-      { type: 'box', layout: 'vertical', margin: 'md', contents: body }
-    ]},
-    footer: { type: 'box', layout: 'vertical', contents: [
-      { type: 'button', style: 'primary', color: '#F2668B', height: 'sm',
-        action: { type: 'uri', label: '查看我的訂單', uri: 'https://liff.line.me/' + LIFF_ID } }
-    ]}
-  };
-}
-
-/* ---------- 締切 → 客戶訂單總表 ----------
- * 每一筆（沒取消的）訂單寫一行。
- * 重要：總表裡「有公式的欄」（例如 狀態）一律不寫，讓公式自己算；
- *   ・標題列是公式（ARRAYFORMULA）的欄 → 跳過
- *   ・上一行是逐行公式的欄 → 把公式複製下來
- * 採購地點：用當天選的店舗（MDM → mdm、COSTCO → Costco）
- * 手機用：有 JAN 放「商品圖檔/JAN.jpg」，沒 JAN 放「公司單_Images/品名.jpg」（商品資料庫，同商品共用一份）
- * 已經寫過的訂單會在「注文」的「総表転記」寫上總表的 ID，重新開放再締切也不會重複寫
- */
-// 照片資料庫：有 JAN → 「商品圖檔」資料夾，檔名＝JAN.jpg；沒 JAN → 「公司單_Images」，檔名＝品名.jpg
-const PHOTO_DIR_ID = '1hlqvJKY9kAzCPFrhBgT9qp_Ml6mc9fKo';   // 公司單_Images
-const JAN_DIR_NAME = '商品圖檔';
-function storeLabel_(store) {
-  const s = String(store || '').toUpperCase();
-  if (s.indexOf('MDM') >= 0) return 'mdm';
-  if (s.indexOf('COSTCO') >= 0 || s.indexOf('コストコ') >= 0) return 'Costco';
-  return '';
-}
-
-function orderPhotoFolder_() {
-  return DriveApp.getFolderById(PHOTO_DIR_ID);
-}
-
-function janPhotoFolder_() {
-  const cache = CacheService.getScriptCache();
-  const hit = cache.get('janDir');
-  if (hit) { try { return DriveApp.getFolderById(hit); } catch (e) {} }
-  const it = DriveApp.getFoldersByName(JAN_DIR_NAME);
-  if (!it.hasNext()) return null;
-  const f = it.next();
-  cache.put('janDir', f.getId(), 21600);
-  return f;
-}
-
-function transferToOrderBook_(date, items, orders, alloc) {
-  const todo = orders.filter(o => o.status !== '取消' && !o.moved);
-  if (!todo.length) return 0;
-  const sh = SpreadsheetApp.openById(ORDER_BOOK_ID).getSheetByName(ORDER_BOOK_SHEET);
-  if (!sh) throw new Error('找不到工作表「' + ORDER_BOOK_SHEET + '」');
-  const lastCol = sh.getLastColumn();
-  const head = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(String);
-  const headF = sh.getRange(1, 1, 1, lastCol).getFormulas()[0];
-  const col = name => head.indexOf(name);
-
-  // 最後一行：用「下單日期」（沒有就第 1 欄）實際有值的位置判斷，不被公式的空白結果騙
-  const keyCol = Math.max(col('下單日期'), 0) + 1;
-  const maxRow = sh.getMaxRows();
-  const keyVals = sh.getRange(1, keyCol, maxRow, 1).getValues();
-  let last = 1;
-  for (let r = keyVals.length - 1; r >= 0; r--) if (String(keyVals[r][0]).trim() !== '') { last = r + 1; break; }
-
-  // 上一行的逐行公式（R1C1，往下複製用）
-  const prevF = last >= 2 ? sh.getRange(last, 1, 1, lastCol).getFormulasR1C1()[0] : head.map(() => '');
-  const skip = head.map((h, j) => !!headF[j] || !!prevF[j]);   // 有公式的欄都不寫值
-
-  const ymd = date.slice(2).replace(/-/g, '');
-  const dateVal = date.replace(/-/g, '/');
-  const place = storeLabel_(PROP.getProperty('STORE_' + date));
-  const rows = [], ids = [];
-  todo.forEach((o, k) => {
-    const it = items.find(i => i.no === o.no) || {};
-    const got = it.status === ST.NG ? 0 : (it.status === ST.TODO ? o.qty : (alloc[o.id] !== undefined ? alloc[o.id] : o.qty));
-    const who = o.sub || o.code;
-    // 照片先放原本的連結；存進圖庫（商品圖檔／公司單_Images）改在背景分批做，締切不用等
-    const link = it.photoId ? 'https://drive.google.com/file/d/' + it.photoId + '/view' : '無';
-    const mobile = it.photoId ? '' : '無';
-    const id = 'ORD-' + ymd + '-' + randomId_(5);
-    const row = head.map(() => '');
-    const set = (name, v) => { if (col(name) >= 0) row[col(name)] = v; };
-    set('下單日期', dateVal);
-    set('客戶編號', who);
-    set('品名', it.name ? it.name + (it.nameJa ? ' / ' + it.nameJa : '') : '現場連線 ' + o.no);
-    set('JAN碼', String(it.jan || '').replace(/^'/, ''));
-    set('數量', got > 0 ? got : o.qty);
-    set('規格', o.memo || '');
-    set('照片連結', link);
-    set('採購地點', place);
-    set('備註', got > 0 && got < o.qty ? '訂' + o.qty + '→買到' + got : (got > 0 ? '' : 'x'));
-    set('ID', id);
-    set('手機用', mobile);
-    rows.push(row); ids.push(id);
-  });
-
-  // 只寫「沒有公式」的欄，一段一段連續寫
-  const start = last + 1;
-  if (sh.getMaxRows() < start + rows.length - 1) sh.insertRowsAfter(sh.getMaxRows(), start + rows.length - 1 - sh.getMaxRows());
-  let j = 0;
-  while (j < head.length) {
-    if (skip[j]) { j++; continue; }
-    let e = j;
-    while (e + 1 < head.length && !skip[e + 1]) e++;
-    sh.getRange(start, j + 1, rows.length, e - j + 1).setValues(rows.map(r => r.slice(j, e + 1)));
-    j = e + 1;
-  }
-  // 逐行公式往下複製（標題 ARRAYFORMULA 的欄不用動）
-  head.forEach((h, c) => {
-    if (!headF[c] && prevF[c]) sh.getRange(start, c + 1, rows.length, 1).setFormulasR1C1(rows.map(() => [prevF[c]]));
-  });
-  todo.forEach((o, k) => setCells_(SH.ORDERS, o._row, { '総表転記': ids[k] }));
-  scheduleArchive_(5);
-  return rows.length;
-}
-
-/* =====================================================================
- * 背景存圖：締切後自動跑，把有人訂的商品照片存進圖庫，再回填總表的 照片連結／手機用
- *   有 JAN → 商品圖檔/JAN.jpg（已經有就直接用）
- *   沒 JAN → 公司單_Images/品名.jpg（同名不同商品加 (2)）
- * 一次最多跑 4 分半，沒做完會自己排下一次（照片 100 張以上也沒問題）
- * ===================================================================== */
-function scheduleArchive_(sec) {
-  try {
-    ScriptApp.getProjectTriggers().forEach(t => { if (t.getHandlerFunction() === 'archivePhotos') ScriptApp.deleteTrigger(t); });
-    ScriptApp.newTrigger('archivePhotos').timeBased().after((sec || 5) * 1000).create();
-  } catch (e) { notifyAdmin_('排背景存圖失敗：' + e.message + '\n可以手動在 Apps Script 執行 archivePhotos'); }
-}
-
-function archivePhotos() {
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(1000)) { scheduleArchive_(60); return; }
-  const t0 = Date.now();
-  try {
-    ensureHeadersOnce_();
-    ScriptApp.getProjectTriggers().forEach(t => { if (t.getHandlerFunction() === 'archivePhotos') ScriptApp.deleteTrigger(t); });
-    const pend = readAll_(SH.ORDERS).filter(r => r['総表転記'] && String(r['総表転記']).indexOf('ORD-') === 0 && !r['写真保存'] && r['状態'] !== '取消');
-    if (!pend.length) return;
-    const items = {};
-    readAll_(SH.ITEMS).forEach(r => { items[r['日付'] + '|' + r['商品番号']] = r; });
-
-    const folder = orderPhotoFolder_(), dirName = folder.getName();
-    let janDir = null;
-    try { janDir = janPhotoFolder_(); } catch (e) {}
-
-    const book = SpreadsheetApp.openById(ORDER_BOOK_ID).getSheetByName(ORDER_BOOK_SHEET);
-    const head = book.getRange(1, 1, 1, book.getLastColumn()).getValues()[0].map(String);
-    const cId = head.indexOf('ID'), cG = head.indexOf('照片連結'), cM = head.indexOf('手機用');
-    const ids = book.getRange(1, cId + 1, book.getLastRow(), 1).getValues().map(r => String(r[0]));
-
-    const done = {};   // 同一個商品只存一次
-    let left = 0;
-    for (const r of pend) {
-      if (Date.now() - t0 > 270000) { left++; continue; }
-      const it = items[r['日付'] + '|' + r['商品番号']] || {};
-      const photoId = it['写真ID'];
-      let res = null;
-      if (photoId) {
-        const jan = String(it['JAN'] || '').replace(/\D/g, '');
-        const key = jan || (r['日付'] + '|' + r['商品番号']);
-        try {
-          if (!done[key]) {
-            let f = null, dir = folder, dname = dirName;
-            if (jan) {
-              if (janDir) { dir = janDir; dname = janDir.getName(); }
-              for (const ext of ['.jpg', '.png', '.jpeg']) { const ex = dir.getFilesByName(jan + ext); if (ex.hasNext()) { f = ex.next(); break; } }
-              if (!f) f = DriveApp.getFileById(photoId).makeCopy(jan + '.jpg', dir);
-            } else {
-              const pname = String(it['品名(日)'] || it['品名'] || ('現場連線 ' + r['商品番号'])).replace(/[\\/:*?"<>|\n]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
-              let name = pname + '.jpg', n = 1;
-              while (dir.getFilesByName(name).hasNext()) name = pname + ' (' + (++n) + ').jpg';
-              f = DriveApp.getFileById(photoId).makeCopy(name, dir);
-            }
-            done[key] = { path: dname + '/' + f.getName(), url: 'https://drive.google.com/file/d/' + f.getId() + '/view' };
-          }
-          res = done[key];
-        } catch (e) { notifyAdmin_('存圖失敗 ' + r['商品番号'] + '：' + e.message); }
-      }
-      const row = ids.indexOf(String(r['総表転記'])) + 1;
-      if (row > 1 && res) {
-        if (cG >= 0) book.getRange(row, cG + 1).setValue(res.url);
-        if (cM >= 0) book.getRange(row, cM + 1).setValue(res.path);
-      }
-      setCells_(SH.ORDERS, r._row, { '写真保存': res ? res.path : '無' });
-    }
-    if (left) scheduleArchive_(30);
-  } finally { lock.releaseLock(); }
-}
-
-function randomId_(n) {
-  const c = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let s = '';
-  for (let i = 0; i < n; i++) s += c.charAt(Math.floor(Math.random() * c.length));
-  return s;
-}
-
-function resultText_(status, qty, got) {
-  if (status === ST.NG) return '缺貨取消';
-  if (status === ST.PART) return got >= qty ? '×' + qty + ' 已買到' : '訂 ' + qty + ' → 買到 ' + got;
-  if (status === ST.DONE) return '×' + qty + ' 已買到';
-  return '×' + qty + '（確認中）';
-}
-
-/* =====================================================================
- * 缺貨分配：所有訂單的每一段（原本＋追加）依時間排序，先到先得
- * 回傳 { 注文ID: 分到的數量 }；只有「一部」「欠品」「購入済」的商品才算
- * ===================================================================== */
-function allocAll_(items, orders) {
-  const res = {};
-  items.forEach(it => {
-    const os = orders.filter(o => o.no === it.no && o.status !== '取消');
-    if (it.status === ST.TODO) return;
-    if (it.status === ST.NG) { os.forEach(o => res[o.id] = 0); return; }
-    if (it.status === ST.DONE) { os.forEach(o => res[o.id] = o.qty); return; }
-    let left = it.got;
-    const segs = [];
-    os.forEach(o => { res[o.id] = 0; o.segs.forEach(s => segs.push({ id: o.id, q: s.q, t: s.t })); });
-    segs.sort((a, b) => a.t - b.t).forEach(s => { const g = Math.min(s.q, Math.max(left, 0)); left -= g; res[s.id] += g; });
-  });
-  return res;
-}
-
-/* =====================================================================
- * 資料讀寫
- * ===================================================================== */
-function sheet_(name) { return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name); }
-
-// 同一次執行內重複讀同一張表時用快取（寫入時會一起更新），按鈕回應比較快
-const MEMO_ = {};
-function readAll_(name) {
-  if (MEMO_[name]) return MEMO_[name].map(o => Object.assign({}, o));
-  const sh = sheet_(name);
-  const n = sh.getLastRow();
-  if (n < 2) return [];
-  const vals = sh.getRange(1, 1, n, sh.getLastColumn()).getDisplayValues();
-  const head = vals[0];
-  MEMO_[name] = vals.slice(1).map((r, i) => {
-    const o = { _row: i + 2 };
-    head.forEach((h, j) => { if (h) o[h] = r[j]; });
-    return o;
-  });
-  return MEMO_[name].map(o => Object.assign({}, o));
-}
-
-function headerIndex_(name) {
-  const sh = sheet_(name);
-  return sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-}
-
-function appendRow_(name, obj) {
-  delete MEMO_[name];
-  const head = headerIndex_(name);
-  sheet_(name).appendRow(head.map(h => (obj[h] !== undefined ? obj[h] : '')));
-}
-
-function setCells_(name, row, patch) {
-  const head = headerIndex_(name);
-  const sh = sheet_(name);
-  const cols = Object.keys(patch).map(k => head.indexOf(k)).filter(c => c >= 0);
-  if (!cols.length) return;
-  // 一次寫一段（減少寫入次數）
-  const c1 = Math.min.apply(null, cols), c2 = Math.max.apply(null, cols);
-  const rg = sh.getRange(row, c1 + 1, 1, c2 - c1 + 1);
-  const cur = c2 > c1 ? rg.getValues()[0] : [''];
-  Object.keys(patch).forEach(k => { const c = head.indexOf(k); if (c >= 0) cur[c - c1] = patch[k]; });
-  rg.setValues([cur]);
-  if (MEMO_[name]) {
-    const m = MEMO_[name].find(o => o._row === row);
-    if (m) Object.keys(patch).forEach(k => { m[k] = String(patch[k]); });
-  }
-}
-
-function loadItems_(date) {
-  // 同時上傳時寫進工作表的順序可能會亂，所以依商品番号排序
-  return readAll_(SH.ITEMS).filter(r => r['日付'] === date && r['状態'] !== ST.DEL && r['状態'] !== ST.WAIT).sort((a, b) => String(a['商品番号']).localeCompare(String(b['商品番号']))).map(r => ({
-    row: r._row, no: r['商品番号'], url: r['写真URL'], photoId: r['写真ID'], price: r['価格'], memo: r['備考'],
-    name: r['品名'] || '', nameJa: r['品名(日)'] || '', jan: r['JAN'] || '',
-    pos: r['位置'] || '', tagPrice: r['値札価格'] || '', tagKind: r['値札区分'] || '', taxRate: r['税率'] || '',
-    status: r['状態'] || ST.TODO, got: Number(r['購入数']) || 0, flag: r['変更あり']
-  }));
-}
-
-function loadOrders_(date) {
-  return readAll_(SH.ORDERS).filter(r => r['日付'] === date).map(r => {
-    let segs;
-    try { segs = JSON.parse(r['数量内訳']); } catch (e) { segs = null; }
-    if (!Array.isArray(segs) || !segs.length) segs = [{ q: Number(r['数量']) || 0, t: 0 }];
-    return {
-      _row: r._row, id: r['注文ID'], no: r['商品番号'], code: r['会員番号'], name: r['LINE名'], uid: r['userId'],
-      qty: Number(r['数量']) || 0, segs: segs, memo: r['備考'], status: r['状態'], sub: r['子会員'] || '', moved: !!r['総表転記']
+  // 還沒綁定會員編號
+  if (!S.member) {
+    document.getElementById('bar').style.display = 'none';
+    app.innerHTML = `<div class="box bind"><h3>第一次使用</h3>
+      <div class="muted">請輸入你的會員編號，之後就會自動記住，不用再輸入。</div>
+      <input type="text" id="code" placeholder="例如 NL012" autocapitalize="characters">
+      <div style="height:10px"></div><button class="btn" id="bind">確認</button></div>`;
+    document.getElementById('bind').onclick = () => {
+      const v = document.getElementById('code').value.trim();
+      if (!v) { toast('請輸入會員編號', false); return; }
+      call({ action: 'bind', code: v });
     };
-  });
-}
-
-function log_(type, code, name, no, text) {
-  appendRow_(SH.LOG, { '日時': now_(), '種類': type, '会員番号': code, 'LINE名': name, '商品番号': no, '内容': text });
-}
-
-function findMember_(uid) {
-  const cache = CacheService.getScriptCache();
-  const hit = cache.get('mem_' + uid);
-  if (hit) return hit;
-  const r = readAll_(SH.MEMBERS).find(x => x.userId === uid);
-  const code = r ? r['会員番号'] : '';
-  if (code) cache.put('mem_' + uid, code, 600);
-  return code || null;
-}
-
-// AZ入庫資料：「群組設定」＋「客戶資訊」的會員編號（快取 10 分鐘）
-function memberCodes_() {
-  const cache = CacheService.getScriptCache();
-  const hit = cache.get('codes');
-  if (hit) return JSON.parse(hit);
-  const ss = SpreadsheetApp.openById(AZ_SHEET_ID);
-  const set = {};
-  ['群組設定', '客戶資訊'].forEach(n => {
-    const sh = ss.getSheetByName(n);
-    if (!sh || sh.getLastRow() < 2) return;
-    sh.getRange(2, 1, sh.getLastRow() - 1, 1).getDisplayValues().flat()
-      .forEach(c => { c = String(c).trim().toUpperCase(); if (c) set[c] = 1; });
-  });
-  const list = Object.keys(set);
-  cache.put('codes', JSON.stringify(list), 600);
-  return list;
-}
-
-/* ---------- 代理判斷 ----------
- * 規則（跟小助手一樣）：
- *  - 不是 NL 開頭的編號 → 代理（例如 JC），子會員是「JC」開頭的其他編號（JC001…）
- *  - NL092 → 代理
- *  - NL 編號在「客戶資訊」裡有 -N 子編號（例如 NL001-1）→ 代理
- * 子會員一律從「客戶資訊」帶出；找不到任何子會員的，就當一般會員（不用選子會員）
- */
-function agencyInfo_(code) {
-  code = String(code || '').toUpperCase();
-  const all = customerList_();
-  const isNL = code.indexOf('NL') === 0;
-  const subs = all.filter(c => c.code !== code && (
-    c.code.indexOf(code + '-') === 0 ||
-    ((!isNL || code === 'NL092') && c.code.indexOf(code) === 0)
-  ));
-  // 「客戶資訊」裡已經有子會員，或是 NL092 → 代理
-  // （不是 NL 開頭但一個子會員都沒有的，例如個人客戶，當一般會員）
-  if (!subs.length && code !== 'NL092') return null;
-  return { subs: subs.sort((a, b) => a.code.localeCompare(b.code)), example: subExample_(code) };
-}
-
-// 新子會員的格式檢查：NL 代理 → NL001-12；其他代理 → JC001（代理編號開頭再加英數字）
-function subFormatOk_(agency, sub) {
-  const isNL = agency.indexOf('NL') === 0;
-  if (sub.indexOf(agency + '-') === 0 && sub.length > agency.length + 1) return true;
-  if ((!isNL || agency === 'NL092') && sub.indexOf(agency) === 0 && /^[A-Z0-9-]+$/.test(sub.slice(agency.length)) && sub.length > agency.length) return true;
-  return false;
-}
-function subExample_(agency) {
-  return agency.indexOf('NL') === 0 && agency !== 'NL092' ? agency + '-1' : agency + '001';
-}
-
-// 「客戶資訊」A 欄編號 + B 欄收件人（快取 10 分鐘）
-function customerList_() {
-  const cache = CacheService.getScriptCache();
-  const hit = cache.get('custlist');
-  if (hit) return JSON.parse(hit);
-  const sh = SpreadsheetApp.openById(AZ_SHEET_ID).getSheetByName('客戶資訊');
-  const list = [];
-  if (sh && sh.getLastRow() > 1) {
-    sh.getRange(2, 1, sh.getLastRow() - 1, 2).getDisplayValues().forEach(r => {
-      const c = String(r[0]).trim().toUpperCase();
-      if (c) list.push({ code: c, name: String(r[1] || '').trim().slice(0, 20) });
-    });
+    return;
   }
-  try { cache.put('custlist', JSON.stringify(list), 600); } catch (e) { /* 太大放不進快取就算了 */ }
-  return list;
-}
 
-function groupMap_() {
-  const sh = SpreadsheetApp.openById(AZ_SHEET_ID).getSheetByName('群組設定');
-  const map = {};
-  if (sh && sh.getLastRow() > 1) {
-    sh.getRange(2, 1, sh.getLastRow() - 1, 2).getDisplayValues().forEach(r => {
-      const c = String(r[0]).trim().toUpperCase();
-      if (c && r[1]) map[c] = String(r[1]).trim();
-    });
+  AG = !!S.agency;
+  let h = '';
+  if (AG) {
+    h += `<datalist id="subList">${S.agency.subs.map(x => `<option value="${esc(x.code)}">${esc(x.name)}</option>`).join('')}</datalist>`;
+    if (!S.closed) h += `<div class="banner info">代理帳號：每一筆都要填<b>子會員</b>。可以從清單選，也可以輸入新的編號（例：${esc(S.agency.example || '')}）。</div>`;
   }
-  return map;
-}
+  if (S.closed) h += `<div class="banner info">本場已截止收單，下面是你的訂單結果。</div>`;
 
-function isClosed_(date) { return !!PROP.getProperty('CLOSED_' + date); }
+  // 版面：手機是上下排，電腦是左（商品）右（我的訂單）
+  h += `<div class="layout"><div>`;
 
-/* =====================================================================
- * LINE 工具
- * ===================================================================== */
-function reply_(token, text, quickReply) {
-  const msg = { type: 'text', text: text };
-  if (quickReply) msg.quickReply = quickReply;
-  UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
-    method: 'post', contentType: 'application/json',
-    headers: { Authorization: 'Bearer ' + PROP.getProperty('LINE_TOKEN') },
-    payload: JSON.stringify({ replyToken: token, messages: [msg] }), muteHttpExceptions: true
-  });
-}
-
-// 今天還沒選店 → 回覆時附上選店按鈕（點了會傳「店舗 MDM」之類的文字）
-function storeQuick_() {
-  if (PROP.getProperty('STORE_' + today_())) return null;
-  return { items: STORE_CHOICES.map(c => ({ type: 'action', action: { type: 'message', label: c[0], text: '店舗 ' + c[1] } })) };
-}
-function storeAsk_() {
-  return PROP.getProperty('STORE_' + today_()) ? '' : '\n\n今日の店舗を選んでください👇（価格の税計算に使います）';
-}
-
-// 設定今天的店，並重新計算今天「值札看不出含不含稅」的商品價格；回傳重新計算的件數
-function setStore_(store) {
-  const today = today_();
-  PROP.setProperty('STORE_' + today, store);
-  let n = 0;
-  loadItems_(today).forEach(it => {
-    if (!it.tagPrice || it.taxRate === '手入力') return;
-    const [tax, food] = String(it.tagKind || '').split('/');
-    if (tax !== 'unknown') return;
-    const pr = taxIncluded_({ price: Number(it.tagPrice), tax: 'unknown', food: food === 'food' }, today);
-    setCells_(SH.ITEMS, it.row, { '価格': pr.incl, '税抜価格': pr.excl, '税率': pr.rate });
-    n++;
-  });
-  return n;
-}
-
-function pushMessages_(token, to, messages) {
-  if (!token) { notifyAdmin_('沒有設定 XZS_TOKEN（小助手 token），無法推播締切結果'); return false; }
-  const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
-    method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + token },
-    payload: JSON.stringify({ to: to, messages: messages }), muteHttpExceptions: true
-  });
-  if (res.getResponseCode() !== 200) {
-    notifyAdmin_('推播失敗 ' + to + ' HTTP ' + res.getResponseCode() + '：' + res.getContentText().slice(0, 300));
-    return false;
+  // 商品
+  if (!S.closed) {
+    if (!S.items.length) h += `<div class="center">採買人員還沒上傳商品，請稍等一下<br><span class="muted">頁面會自動更新</span></div>`;
+    else {
+      const ordered = {};
+      S.mine.forEach(o => { if (!o.cancelled) ordered[o.no] = (ordered[o.no] || 0) + o.qty; });
+      h += `<div class="grid">` + S.items.map(it => {
+        const lines = cart[it.no] || [];
+        const q = lines.reduce((a, l) => a + l.q, 0);
+        const tag = it.sold ? `<span class="tag ng">已售完</span>` : (ordered[it.no] ? `<span class="tag ok">已訂 ${ordered[it.no]}</span>` : '');
+        let ctl = '';
+        if (it.sold) ctl = '<div class="muted" style="margin-top:6px">這個已經買不到了</div>';
+        else if (!AG) {
+          // 一般會員：一個數量＋備註
+          const l = lines[0] || { q: 0, memo: '' };
+          ctl = `<div class="step"><button data-no="${esc(it.no)}" data-i="0" data-d="-1" aria-label="減少">−</button><b>${l.q}</b><button data-no="${esc(it.no)}" data-i="0" data-d="1" aria-label="增加">＋</button></div>
+            ${l.q ? `<input type="text" data-memo="${esc(it.no)}" data-i="0" placeholder="備註：顏色、尺寸" value="${esc(l.memo)}">` : ''}`;
+        } else if (!lines.length) {
+          // 代理：還沒選 → 一個「下單」按鈕
+          ctl = `<button class="addsub" data-add="${esc(it.no)}">＋ 選子會員下單</button>`;
+        } else {
+          // 代理：每一行＝一位子會員
+          ctl = lines.map((l, i) => `<div class="subl">
+              <input type="text" class="sub ${l.err ? 'err' : ''}" list="subList" data-sub="${esc(it.no)}" data-i="${i}" placeholder="子會員（例：${esc(S.agency.example || '')}）" value="${esc(l.sub)}" autocapitalize="characters">
+              <div class="step"><button data-no="${esc(it.no)}" data-i="${i}" data-d="-1" aria-label="減少">−</button><b>${l.q}</b><button data-no="${esc(it.no)}" data-i="${i}" data-d="1" aria-label="增加">＋</button></div>
+              <input type="text" data-memo="${esc(it.no)}" data-i="${i}" placeholder="備註：顏色、尺寸" value="${esc(l.memo)}">
+            </div>`).join('') + `<button class="addsub" data-add="${esc(it.no)}">＋ 分給其他子會員</button>`;
+        }
+        return `<div class="card ${q ? 'sel' : ''}">
+          <div class="ph"><img src="${esc(sm(it.url))}" loading="lazy" alt="">${tag}<span class="no">${esc(it.no.slice(5))}</span></div>
+          <div class="cb">
+          ${it.pos && /-\d+$/.test(it.no) ? `<div class="pos">📍 照片${esc(it.pos)}</div>` : ''}${it.name ? `<div class="pname">${esc(it.name)}</div>` : ''}${yen(it.price) ? `<div class="price"><b>${yen(it.price)}</b> <span class="muted">含稅</span></div>` : ''}${it.memo ? `<div class="memo">${esc(it.memo)}</div>` : ''}${ctl}
+          </div></div>`;
+      }).join('') + `</div>`;
+    }
   }
-  return true;
-}
 
-function push_(token, to, text) {
-  if (!token) { notifyAdmin_('沒有設定 XZS_TOKEN（小助手 token），無法推播締切結果'); return false; }
-  const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
-    method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + token },
-    payload: JSON.stringify({ to: to, messages: [{ type: 'text', text: text.slice(0, 4900) }] }), muteHttpExceptions: true
+  h += `</div><div class="side">`;
+
+  // 我的訂單
+  const priceOf = {};
+  S.items.forEach(it => priceOf[it.no] = num(it.price));
+  let total = 0, unknown = 0;
+  S.mine.forEach(o => {
+    if (o.cancelled || o.itemStatus === '欠品') return;
+    const q = (o.got != null && o.got < o.qty) ? o.got : o.qty;
+    if (priceOf[o.no]) total += priceOf[o.no] * q; else unknown++;
   });
-  if (res.getResponseCode() !== 200) {
-    notifyAdmin_('推播失敗 ' + to + ' HTTP ' + res.getResponseCode() + '：' + res.getContentText().slice(0, 200));
-    return false;
-  }
-  return true;
+  h += `<div class="box" id="mineBox" style="margin-top:14px"><h3>我的訂單</h3>`;
+  if (total) h += `<div class="banner" style="background:#FFF4E5;color:#7A3E00;margin-bottom:8px">商品預估合計 <b style="font-size:17px">${yen(total)}</b>（含稅）${unknown ? `<div class="muted">另有 ${unknown} 筆價格未定</div>` : ''}<div class="muted">實際金額以收據為準，不含運費</div></div>`;
+  if (!S.mine.length) h += `<div class="muted">還沒有訂單</div>`;
+  S.mine.forEach(o => {
+    const bought = o.itemStatus === '購入済' || o.itemStatus === '一部';
+    let st = '';
+    if (o.cancelled) st = `<span class="pill" style="background:#F1EFE8;color:#444">已取消</span>`;
+    else if (o.itemStatus === '欠品') st = `<span class="pill ng">缺貨取消</span>`;
+    else if (o.got != null && o.got < o.qty) st = `<span class="pill ng">只買到 ${o.got}</span>`;
+    else if (bought) st = `<span class="pill ok">已買到</span>`;
+    const lock = o.cancelled || o.itemStatus === '欠品' || S.closed;
+    h += `<div class="line" style="${o.cancelled ? 'opacity:.5' : ''}"><img src="${esc(o.url || '')}" alt="">
+      <div class="t"><div>${esc(o.no.slice(5))} 號 ${o.sub ? `<span class="pill sb">${esc(o.sub)}</span>` : ''} ${st}</div>
+      ${o.name ? `<div class="muted" style="color:#555">${esc(o.name)}</div>` : ''}
+      <div style="font-size:17px;font-weight:600">×${o.qty}${priceOf[o.no] && !o.cancelled ? ` <span style="font-size:13px;font-weight:400;color:#C2410C">${yen(priceOf[o.no] * o.qty)}</span>` : ''} ${o.parts.length > 1 ? `<span class="muted">(${o.parts.join('+')})</span>` : ''}</div>
+      ${lock ? (o.memo ? `<div class="muted">${esc(o.memo)}</div>` : '') : `
+      <div class="ops"><button data-op="-" data-id="${o.id}" aria-label="減少">−</button><button data-op="+" data-id="${o.id}" aria-label="增加">＋</button><button data-op="x" data-id="${o.id}">取消</button></div>
+      <input type="text" data-om="${o.id}" placeholder="備註" value="${esc(o.memo)}">`}
+      </div></div>`;
+  });
+  h += `</div>`;
+  if (!S.closed) h += `<div class="muted" style="text-align:center">截止前都可以追加、改數量、改備註或取消<br>採買人員已經買到的商品只能追加</div>`;
+  h += `</div></div>`;
+  app.innerHTML = h;
+
+  // 綁事件
+  app.querySelectorAll('[data-d]').forEach(b => b.onclick = () => {
+    const no = b.dataset.no, i = Number(b.dataset.i);
+    const lines = cart[no] = cart[no] || [];
+    if (!lines[i]) lines[i] = { sub: '', q: 0, memo: '' };
+    lines[i].q = Math.max(0, Math.min(99, lines[i].q + Number(b.dataset.d)));
+    if (!lines[i].q) lines.splice(i, 1);           // 數量變 0 → 這一行拿掉
+    if (!lines.length) delete cart[no];
+    render();
+  });
+  app.querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
+    const no = b.dataset.add;
+    (cart[no] = cart[no] || []).push({ sub: '', q: 1, memo: '' });
+    render();
+    const ins = document.querySelectorAll(`[data-sub="${CSS.escape(no)}"]`);
+    if (ins.length) ins[ins.length - 1].focus();
+  });
+  app.querySelectorAll('[data-memo]').forEach(i => i.oninput = () => { const l = (cart[i.dataset.memo] || [])[Number(i.dataset.i)]; if (l) l.memo = i.value; });
+  app.querySelectorAll('[data-sub]').forEach(i => i.oninput = () => {
+    const l = (cart[i.dataset.sub] || [])[Number(i.dataset.i)];
+    if (l) { l.sub = i.value.trim().toUpperCase(); l.err = false; i.classList.remove('err'); }
+  });
+  app.querySelectorAll('[data-op]').forEach(b => b.onclick = () => {
+    if (b.dataset.op === 'x' && !confirm('確定要取消這筆訂單嗎？')) return;
+    call({ action: 'update', orderId: b.dataset.id, op: b.dataset.op });
+  });
+  app.querySelectorAll('[data-om]').forEach(i => i.onchange = () => call({ action: 'update', orderId: i.dataset.om, op: 'memo', memo: i.value }));
+
+  const all = cartList();
+  const n = all.reduce((a, x) => a + x.q, 0);
+  const bar = document.getElementById('bar');
+  bar.style.display = S.closed ? 'none' : 'flex';
+  const btn = document.getElementById('submit');
+  btn.textContent = n ? `送出訂單（${all.length} 筆，共 ${n} 個）` : '選好數量後送出';
+  btn.disabled = !n;
 }
 
-function getDisplayName_(userId) {
+// 購物車攤平成一筆一筆（代理：同一個商品、同一個子會員合併成一筆）
+function cartList() {
+  const out = [];
+  Object.keys(cart).forEach(no => (cart[no] || []).forEach(l => {
+    if (!l.q) return;
+    const ex = out.find(x => x.no === no && x.sub === (l.sub || ''));
+    if (ex) { ex.q += l.q; if (l.memo) ex.memo = l.memo; }
+    else out.push({ no: no, sub: l.sub || '', q: l.q, memo: l.memo || '' });
+  }));
+  return out;
+}
+
+document.getElementById('submit').onclick = async () => {
+  if (busy) return;
+  const list = cartList();
+  if (!list.length) { toast('請至少選一個商品的數量', false); return; }
+  if (AG) {
+    // 代理：每一行都要有子會員
+    let miss = 0;
+    Object.keys(cart).forEach(no => cart[no].forEach(l => { if (!l.sub) { l.err = true; miss++; } }));
+    if (miss) { render(); toast('有 ' + miss + ' 筆還沒填子會員（紅框）', false); return; }
+  }
+  const before = {};
+  (S.mine || []).forEach(o => { if (!o.cancelled) before[o.no + '|' + (o.sub || '')] = true; });
+  const urls = {};
+  const names = {};
+  S.items.forEach(it => { urls[it.no] = it.url; names[it.no] = it.name; });
+  // 按下去立刻有反應：按鈕變「送出中…」＋ 全畫面轉圈
+  const btn = document.getElementById('submit');
+  btn.classList.add('sending'); btn.textContent = '送出中…';
+  if (navigator.vibrate) navigator.vibrate(30);
+  showBusy('送出中…請稍候');
+  const r = await call({ action: 'submit', cart: list }, true);
+  btn.classList.remove('sending');
+  showBusy(false);
+  if (!r || !r.ok) render();
+  if (r && r.ok) {
+    cart = {}; render();
+    const n = list.reduce((a, x) => a + x.q, 0);
+    showDone('下單成功', `共 ${list.length} 筆、${n} 個，已經通知現場採買人員`,
+      list.map(x => ({ no: x.no, name: names[x.no], sub: x.sub, q: x.q, memo: x.memo, url: urls[x.no], tag: before[x.no + '|' + x.sub] ? '追加' : '' })));
+    if (r.msg && r.msg.indexOf('售完') >= 0) toast(r.msg, false);
+  }
+};
+
+// 每 15 秒自動更新（看新上架的商品、售完狀態）
+// 購物車裡選好的數量不會被清掉；只有正在打字時先不更新，免得打到一半畫面跳掉
+setInterval(() => {
+  if (!S || !S.member || S.closed || busy || document.hidden) return;
+  if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+  call({ action: 'init' }, true);
+}, 15000);
+// 從別的 App 切回來時，馬上更新一次
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && S && S.member && !S.closed && !busy) call({ action: 'init' }, true);
+});
+
+(async () => {
   try {
-    const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/profile/' + userId, {
-      headers: { Authorization: 'Bearer ' + PROP.getProperty('LINE_TOKEN') }, muteHttpExceptions: true
-    });
-    return res.getResponseCode() === 200 ? JSON.parse(res.getContentText()).displayName : '';
-  } catch (err) { return ''; }
-}
-
-function notifyAdmin_(text) {
-  const admin = PROP.getProperty('ADMIN_USER_ID');
-  if (!admin) { console.error(text); return; }
-  UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
-    method: 'post', contentType: 'application/json',
-    headers: { Authorization: 'Bearer ' + PROP.getProperty('LINE_TOKEN') },
-    payload: JSON.stringify({ to: admin, messages: [{ type: 'text', text: '【現場連線 錯誤】\n' + String(text).slice(0, 1800) }] }),
-    muteHttpExceptions: true
+    await liff.init({ liffId: LIFF_ID });
+    if (API_URL.indexOf('https://script.google.com/') !== 0) {
+      document.getElementById('app').innerHTML = '<div class="center">網頁設定還沒完成（API_URL）</div>';
+      return;
+    }
+    // 電腦或一般瀏覽器：先跳到 LINE 登入，登入完會自動回到這頁
+    if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+    idToken = liff.getIDToken();
+    call({ action: 'init' }, true);
+  } catch (e) {
+    document.getElementById('app').innerHTML = '<div class="center">無法開啟頁面，請從 LINE 裡打開連結。<br><span class="muted">' + esc(e.message || e) + '</span></div>';
+  }
+})();
+</script>
+<!-- 照片放大：點商品照片就全螢幕顯示，點照片可再放大 2 倍，點外面或 ✕ 關閉 -->
+<style>
+#lb{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:9999;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
+#lb .wrap{min-height:100%;display:flex;align-items:center;justify-content:center}
+#lb img{max-width:100%;max-height:100vh;display:block;cursor:zoom-in}
+#lb.big img{max-width:none;max-height:none;width:200%;cursor:zoom-out}
+#lb .x{position:fixed;top:12px;right:12px;width:44px;height:44px;border-radius:50%;border:0;background:rgba(255,255,255,.9);font-size:22px;font-weight:bold;color:#333;z-index:10000}
+#lb .hint{position:fixed;bottom:16px;left:0;right:0;text-align:center;color:#ddd;font-size:13px;pointer-events:none}
+.zoomable{cursor:zoom-in}
+</style>
+<div id="lb"><button class="x" aria-label="關閉">✕</button><div class="wrap"><img alt=""></div><div class="hint">點照片可放大，點旁邊關閉</div></div>
+<script>
+(function () {
+  const lb = document.getElementById('lb'), im = lb.querySelector('img');
+  const big = u => String(u || '').replace(/([?&]sz=)w\d+/, '$1w2000');
+  document.addEventListener('click', e => {
+    const t = e.target;
+    if (t.tagName === 'IMG' && !lb.contains(t) && t.closest('.ph, .line, .row, .card')) {
+      e.preventDefault(); e.stopPropagation();
+      im.src = t.src; im.src = big(t.src);
+      lb.classList.remove('big'); lb.style.display = 'block'; document.body.style.overflow = 'hidden';
+    }
+  }, true);
+  const close = () => { lb.style.display = 'none'; im.removeAttribute('src'); document.body.style.overflow = ''; };
+  lb.querySelector('.x').onclick = close;
+  lb.addEventListener('click', e => {
+    if (e.target === im) { lb.classList.toggle('big'); return; }
+    if (e.target !== lb.querySelector('.x')) close();
   });
-}
-
-function today_() { return Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd'); }
-function now_() { return Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm:ss'); }
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+})();
+</script>
+</body>
+</html>
