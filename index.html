@@ -316,12 +316,17 @@ document.getElementById('submit').onclick = async () => {
   }
 };
 
-// 沒有在選東西、沒有在打字時，每 20 秒自動更新（看新上架的商品、售完狀態）
+// 每 15 秒自動更新（看新上架的商品、售完狀態）
+// 購物車裡選好的數量不會被清掉；只有正在打字時先不更新，免得打到一半畫面跳掉
 setInterval(() => {
-  if (!S || !S.member || S.closed || Object.keys(cart).length || busy) return;
+  if (!S || !S.member || S.closed || busy || document.hidden) return;
   if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
   call({ action: 'init' }, true);
-}, 20000);
+}, 15000);
+// 從別的 App 切回來時，馬上更新一次
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && S && S.member && !S.closed && !busy) call({ action: 'init' }, true);
+});
 
 (async () => {
   try {
