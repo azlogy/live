@@ -189,7 +189,9 @@ document.getElementById('close').onclick = () => {
   if (confirm('締切しますか？お客様のグループに結果が通知されます。')) call({ action: 'staff_close' });
 };
 
-setInterval(() => { if (!busy) call({ action: 'staff_get' }, true); }, 10000);
+setInterval(() => { if (!busy && !document.hidden) call({ action: 'staff_get' }, true); }, 10000);
+// 從 LINE 或相機切回來時，馬上更新一次
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !busy) call({ action: 'staff_get' }, true); });
 call({ action: 'staff_get' }, true);
 </script>
 </body>
