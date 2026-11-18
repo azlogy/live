@@ -26,6 +26,7 @@
   .TODO { background: #F1EFE8; color: #444441; } .DONE { background: #EAF3DE; color: #27500A; }
   .PART { background: #FAEEDA; color: #633806; } .NG { background: #FCEBEB; color: #791F1F; }
   .chg { background: #FAEEDA; color: #633806; }
+  .del { height: 24px; padding: 0 8px; border: 1px solid #F09595; border-radius: 6px; background: #fff; color: #A32D2D; font-size: 12px; }
   .lines { font-size: 14px; margin: 6px 0; }
   .lines .short { color: #A32D2D; }
   .sub { color: #888; font-size: 12px; }
@@ -130,7 +131,7 @@ function render() {
     h += `<div class="card ${i.flag ? 'flag' : ''}"><img src="${esc(i.url)}" loading="lazy" alt="">
       <div class="t"><div class="top"><b>${esc(i.no.slice(-2))}</b>
         <span class="need">必要 <b>${i.need}</b> 個${i.status === '一部' ? '　購入 ' + i.got : ''}${i.status === '未処理' && i.got ? '　<span class="sub">(購入済 ' + i.got + ')</span>' : ''}</span>
-        <span style="margin-left:auto;display:flex;gap:4px">${i.flag ? '<span class="tag chg">変更あり</span>' : ''}<span class="tag ${CLS[i.status] || 'TODO'}">${esc(i.status)}</span></span></div>
+        <span style="margin-left:auto;display:flex;gap:4px;align-items:center">${i.flag ? '<span class="tag chg">変更あり</span>' : ''}<span class="tag ${CLS[i.status] || 'TODO'}">${esc(i.status)}</span>${!S.closed && !i.need ? `<button class="del" data-del="${esc(i.no)}" aria-label="削除">削除</button>` : ''}</span></div>
         ${i.price || i.memo ? `<div class="sub">${i.price ? esc(i.price) + '円 ' : ''}${esc(i.memo || '')}</div>` : ''}
         <div class="lines">${lines}</div>
         ${S.closed || !i.need ? '' : `<div class="ops">
@@ -143,6 +144,9 @@ function render() {
   const app = document.getElementById('app');
   app.innerHTML = h;
   app.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { VIEW = b.dataset.view; render(); });
+  app.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    if (confirm(b.dataset.del.slice(-2) + ' 番の商品を削除しますか？\nお客様の注文ページからも消えます。')) call({ action: 'staff_set', no: b.dataset.del, act: 'del' });
+  });
   app.querySelectorAll('[data-act]').forEach(b => b.onclick = () => call({ action: 'staff_set', no: b.dataset.no, act: b.dataset.act }));
 }
 
