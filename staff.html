@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>現場確認</title>
 <style>
+  .hl { position: absolute; border: 3px solid #FF2D78; border-radius: 10px; box-shadow: 0 0 0 2px rgba(255,255,255,.9), 0 0 0 9999px rgba(0,0,0,.18); pointer-events: none; box-sizing: border-box; }
+  .cw { position: relative; overflow: hidden; width: 76px; height: 76px; border-radius: 8px; flex-shrink: 0; background: #e9e8e2; }
+  .cw img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+  .pg { display: inline-grid; grid-template-columns: repeat(3, 5px); gap: 1.5px; vertical-align: middle; margin-right: 5px; flex: none; padding: 2px; background: #fff; border-radius: 3px; border: 1px solid #9FD9C4; }
+  .pg i { width: 5px; height: 5px; background: #D5EFE5; border-radius: 1px; }
+  .pg i.on { background: #E0457B; }
+
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; background: #f5f5f3; color: #1a1a1a; font-size: 15px; }
   header { background: #06C755; color: #fff; padding: 12px 14px; font-size: 17px; font-weight: 600; display: flex; align-items: center; gap: 8px; position: sticky; top: 0; z-index: 5; }
@@ -88,6 +96,37 @@ function api(req) {
 }
 // 一覧は小さい画像（100 枚でも軽い）；拡大時は大きい画像
 function sm(u) { return String(u || '').replace(/([?&]sz=)w\d+/, '$1w400'); }
+// 位置：「上段左」這種貨架用語客人看不懂 → 改成「左上」（日本語表示）＋ 3×3 小格子標出在照片哪裡
+function posInfo(p) {
+  p = String(p || '');
+  const r = /上/.test(p) ? 0 : /下/.test(p) ? 2 : 1;
+  const c = /左/.test(p) ? 0 : /右/.test(p) ? 2 : 1;
+  const V = ['上', '', '下'], H = ['左', '', '右'];
+  let t = (H[c] + V[r]) || '中央';
+  if (!H[c] && V[r]) t = V[r] + '中央';
+  if (H[c] && !V[r]) t = H[c] + '側';
+  let g = '';
+  for (let i = 0; i < 9; i++) g += `<i class="${i === r * 3 + c ? 'on' : ''}"></i>`;
+  return { text: t, grid: `<span class="pg">${g}</span>` };
+}
+// 一張照片拆成好幾個商品時：卡片只放大顯示那個商品，並用粉紅框圈起來（AI 給的框）
+function fitCrop(img) {
+  const b = String(img.dataset.box || '').split(',').map(Number);
+  if (b.length !== 4 || !img.naturalWidth) return;
+  const nw = img.naturalWidth, nh = img.naturalHeight;
+  const x0 = b[1] / 1000 * nw, y0 = b[0] / 1000 * nh, x1 = b[3] / 1000 * nw, y1 = b[2] / 1000 * nh;
+  let side = Math.max(x1 - x0, y1 - y0) * 1.35;
+  side = Math.min(Math.max(side, Math.min(nw, nh) * 0.35), Math.max(nw, nh));
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const sx = side <= nw ? Math.min(Math.max(0, cx - side / 2), nw - side) : (nw - side) / 2;
+  const sy = side <= nh ? Math.min(Math.max(0, cy - side / 2), nh - side) : (nh - side) / 2;
+  const P = v => (v / side * 100) + '%';
+  Object.assign(img.style, { position: 'absolute', maxWidth: 'none', objectFit: 'fill', borderRadius: '0',
+    width: P(nw), height: P(nh), left: P(-sx), top: P(-sy) });
+  let hl = img.parentNode.querySelector('.hl');
+  if (!hl) { hl = document.createElement('i'); hl.className = 'hl'; img.parentNode.appendChild(hl); }
+  Object.assign(hl.style, { left: P(x0 - sx), top: P(y0 - sy), width: P(x1 - x0), height: P(y1 - y0) });
+}
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function toast(t, good) {
   const e = document.getElementById('toast');
@@ -161,11 +200,11 @@ function render() {
       const short = (i.status === '一部' || i.status === '欠品') && l.got != null && l.got < l.qty;
       return `<div class="${short ? 'short' : ''}">${esc(l.code)} ${esc(l.name)}${l.sub ? ` <span class="tag sb">${esc(l.sub)}</span>` : ''}　×${l.qty}${l.parts.length > 1 ? ` <span class="sub">(${l.parts.join('+')})</span>` : ''}${short ? ' → ' + l.got : ''}${l.memo ? ` <span class="sub">${esc(l.memo)}</span>` : ''}</div>`;
     }).join('') : '<div class="sub">注文なし</div>';
-    h += `<div class="card ${i.flag ? 'flag' : ''}" data-card="${esc(i.no)}"><img src="${esc(sm(i.url))}" loading="lazy" alt="">
+    h += `<div class="card ${i.flag ? 'flag' : ''}" data-card="${esc(i.no)}"><span class="cw"><img src="${esc(sm(i.url))}" loading="lazy" alt=""${i.box && /-\d+$/.test(i.no) ? ` data-box="${esc(i.box)}" onload="fitCrop(this)"` : ''}></span>
       <div class="t"><div class="top"><b>${esc(i.no.slice(5))}</b>
         <span class="need">必要 <b>${i.need}</b> 個${i.status === '一部' ? '　購入 ' + i.got : ''}${i.status === '未処理' && i.got ? '　<span class="sub">(購入済 ' + i.got + ')</span>' : ''}</span>
         <span style="margin-left:auto;display:flex;gap:4px;align-items:center">${i.flag ? '<span class="tag chg">変更あり</span>' : ''}<span class="tag ${CLS[i.status] || 'TODO'}">${esc(i.status)}</span>${!S.closed && !i.need ? `<button class="del" data-del="${esc(i.no)}" aria-label="削除">削除</button>` : ''}</span></div>
-        ${i.pos && /-\d+$/.test(i.no) ? `<span class="tag sb">📍${esc(i.pos)}</span>` : ''}
+        ${i.pos && /-\d+$/.test(i.no) ? `<span class="tag sb">${posInfo(i.pos).grid}写真の${posInfo(i.pos).text}</span>` : ''}
         ${i.name || i.nameJa ? `<div style="font-size:13px;line-height:1.35">${esc(i.nameJa || i.name)}${i.nameJa && i.name ? `<div class="sub">${esc(i.name)}</div>` : ''}</div>` : ''}
         ${i.price || i.memo ? `<div class="sub">${i.price ? '税込 ' + esc(i.price) + '円 ' : ''}${esc(i.memo || '')}</div>` : ''}
         <div class="lines">${lines}</div>
@@ -301,13 +340,15 @@ call({ action: 'staff_get' }, true);
 <style>
 #lb{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:9999;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
 #lb .wrap{min-height:100%;display:flex;align-items:center;justify-content:center}
-#lb img{max-width:100%;max-height:100vh;display:block;cursor:zoom-in}
-#lb.big img{max-width:none;max-height:none;width:200%;cursor:zoom-out}
+#lb .lbw{position:relative;display:inline-block;line-height:0}
+#lb img{max-width:100vw;max-height:100vh;display:block;cursor:zoom-in}
+#lb.big img{max-width:none;max-height:none;width:200vw;cursor:zoom-out}
+#lb .lbhl{position:absolute;border:4px solid #FF2D78;border-radius:12px;box-shadow:0 0 0 2px #fff;pointer-events:none;display:none}
 #lb .x{position:fixed;top:12px;right:12px;width:44px;height:44px;border-radius:50%;border:0;background:rgba(255,255,255,.9);font-size:22px;font-weight:bold;color:#333;z-index:10000}
 #lb .hint{position:fixed;bottom:16px;left:0;right:0;text-align:center;color:#ddd;font-size:13px;pointer-events:none}
 .zoomable{cursor:zoom-in}
 </style>
-<div id="lb"><button class="x" aria-label="閉じる">✕</button><div class="wrap"><img alt=""></div><div class="hint">写真をタップで拡大・外側をタップで閉じる</div></div>
+<div id="lb"><button class="x" aria-label="閉じる">✕</button><div class="wrap"><span class="lbw"><img alt=""><i class="lbhl"></i></span></div><div class="hint">写真をタップで拡大・外側をタップで閉じる</div></div>
 <script>
 (function () {
   const lb = document.getElementById('lb'), im = lb.querySelector('img');
@@ -317,6 +358,11 @@ call({ action: 'staff_get' }, true);
     if (t.tagName === 'IMG' && !lb.contains(t) && t.closest('.card')) {
       e.preventDefault(); e.stopPropagation();
       im.src = t.src; im.src = big(t.src);
+      // 有商品框就在大圖上也圈起來
+      const hl = lb.querySelector('.lbhl'), bx = String(t.dataset.box || '').split(',').map(Number);
+      if (bx.length === 4 && bx.every(v => v >= 0)) {
+        Object.assign(hl.style, { display: 'block', top: bx[0] / 10 + '%', left: bx[1] / 10 + '%', height: (bx[2] - bx[0]) / 10 + '%', width: (bx[3] - bx[1]) / 10 + '%' });
+      } else hl.style.display = 'none';
       lb.classList.remove('big'); lb.style.display = 'block'; document.body.style.overflow = 'hidden';
     }
   }, true);
