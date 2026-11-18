@@ -110,22 +110,44 @@ function posInfo(p) {
   return { text: t, grid: `<span class="pg">${g}</span>` };
 }
 // 一張照片拆成好幾個商品時：卡片只放大顯示那個商品，並用粉紅框圈起來（AI 給的框）
-function fitCrop(img) {
-  const b = String(img.dataset.box || '').split(',').map(Number);
-  if (b.length !== 4 || !img.naturalWidth) return;
-  const nw = img.naturalWidth, nh = img.naturalHeight;
+// 算好的大小記在 NAT，下次重畫（按＋−）直接套用，照片不會閃一下、抖一下
+const NAT = {};
+function cropCalc(nw, nh, boxStr) {
+  const b = String(boxStr || '').split(',').map(Number);
+  if (b.length !== 4 || !nw) return null;
   const x0 = b[1] / 1000 * nw, y0 = b[0] / 1000 * nh, x1 = b[3] / 1000 * nw, y1 = b[2] / 1000 * nh;
-  let side = Math.max(x1 - x0, y1 - y0) * 1.35;
-  side = Math.min(Math.max(side, Math.min(nw, nh) * 0.35), Math.max(nw, nh));
+  const bw = x1 - x0, bh = y1 - y0;
+  let side = Math.max(Math.max(bw, bh) * 1.3, Math.min(nw, nh) * 0.35);
+  // 不要超出照片（兩旁出現灰邊）；除非商品本身比照片的短邊還大
+  if (side > Math.min(nw, nh)) side = Math.max(Math.min(nw, nh), Math.max(bw, bh));
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
   const sx = side <= nw ? Math.min(Math.max(0, cx - side / 2), nw - side) : (nw - side) / 2;
   const sy = side <= nh ? Math.min(Math.max(0, cy - side / 2), nh - side) : (nh - side) / 2;
-  const P = v => (v / side * 100) + '%';
-  Object.assign(img.style, { position: 'absolute', maxWidth: 'none', objectFit: 'fill', borderRadius: '0',
-    width: P(nw), height: P(nh), left: P(-sx), top: P(-sy) });
+  const P = v => (v / side * 100).toFixed(3) + '%';
+  return {
+    img: `position:absolute;max-width:none;object-fit:fill;border-radius:0;width:${P(nw)};height:${P(nh)};left:${P(-sx)};top:${P(-sy)}`,
+    hl: `left:${P(x0 - sx)};top:${P(y0 - sy)};width:${P(bw)};height:${P(bh)}`
+  };
+}
+function fitCrop(img) {
+  if (!img.naturalWidth) return;
+  NAT[img.getAttribute('src')] = [img.naturalWidth, img.naturalHeight];
+  const c = cropCalc(img.naturalWidth, img.naturalHeight, img.dataset.box);
+  if (!c) return;
+  img.style.cssText = c.img;
   let hl = img.parentNode.querySelector('.hl');
   if (!hl) { hl = document.createElement('i'); hl.className = 'hl'; img.parentNode.appendChild(hl); }
-  Object.assign(hl.style, { left: P(x0 - sx), top: P(y0 - sy), width: P(x1 - x0), height: P(y1 - y0) });
+  hl.style.cssText = c.hl;
+}
+// 卡片照片的 HTML：已經知道照片大小就直接畫好裁切（不用等載入）
+function cropImg(url, box, useBox) {
+  if (!useBox || !box) return `<img src="${esc(sm(url))}" loading="lazy" alt="">`;
+  // 裁切放大時用大一點的圖，不然會糊
+  const big = String(url || '').replace(/([?&]sz=)w\d+/, '$1w1600');
+  const src = esc(big);
+  const n = NAT[big], c = n && cropCalc(n[0], n[1], box);
+  if (c) return `<img src="${src}" alt="" data-box="${esc(box)}" style="${c.img}"><i class="hl" style="${c.hl}"></i>`;
+  return `<img src="${src}" loading="lazy" alt="" data-box="${esc(box)}" onload="fitCrop(this)">`;
 }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function toast(t, good) {
@@ -200,7 +222,7 @@ function render() {
       const short = (i.status === '一部' || i.status === '欠品') && l.got != null && l.got < l.qty;
       return `<div class="${short ? 'short' : ''}">${esc(l.code)} ${esc(l.name)}${l.sub ? ` <span class="tag sb">${esc(l.sub)}</span>` : ''}　×${l.qty}${l.parts.length > 1 ? ` <span class="sub">(${l.parts.join('+')})</span>` : ''}${short ? ' → ' + l.got : ''}${l.memo ? ` <span class="sub">${esc(l.memo)}</span>` : ''}</div>`;
     }).join('') : '<div class="sub">注文なし</div>';
-    h += `<div class="card ${i.flag ? 'flag' : ''}" data-card="${esc(i.no)}"><span class="cw"><img src="${esc(sm(i.url))}" loading="lazy" alt=""${i.box && /-\d+$/.test(i.no) ? ` data-box="${esc(i.box)}" onload="fitCrop(this)"` : ''}></span>
+    h += `<div class="card ${i.flag ? 'flag' : ''}" data-card="${esc(i.no)}"><span class="cw">${cropImg(i.url, i.box, /-\d+$/.test(i.no))}</span>
       <div class="t"><div class="top"><b>${esc(i.no.slice(5))}</b>
         <span class="need">必要 <b>${i.need}</b> 個${i.status === '一部' ? '　購入 ' + i.got : ''}${i.status === '未処理' && i.got ? '　<span class="sub">(購入済 ' + i.got + ')</span>' : ''}</span>
         <span style="margin-left:auto;display:flex;gap:4px;align-items:center">${i.flag ? '<span class="tag chg">変更あり</span>' : ''}<span class="tag ${CLS[i.status] || 'TODO'}">${esc(i.status)}</span>${!S.closed && !i.need ? `<button class="del" data-del="${esc(i.no)}" aria-label="削除">削除</button>` : ''}</span></div>
