@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>現場確認</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; background: #f5f5f3; color: #1a1a1a; font-size: 15px; }
+  header { background: #06C755; color: #fff; padding: 12px 14px; font-size: 17px; font-weight: 600; display: flex; align-items: center; gap: 8px; position: sticky; top: 0; z-index: 5; }
+  header .st { margin-left: auto; background: #fff; color: #06C755; font-size: 13px; padding: 2px 10px; border-radius: 8px; }
+  header .st.closed { color: #A32D2D; }
+  main { padding: 12px; padding-bottom: 80px; }
+  .prog { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; color: #555; }
+  .prog .b { flex: 1; height: 8px; background: #e2e0d8; border-radius: 4px; overflow: hidden; }
+  .prog .b div { height: 100%; background: #06C755; }
+  .log { background: #fff; border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px; }
+  .log b { font-size: 13px; }
+  .card { background: #fff; border-radius: 12px; padding: 10px; margin-bottom: 10px; display: flex; gap: 10px; border: 1px solid #e5e3db; }
+  .card.flag { border: 2px solid #EF9F27; }
+  .card img { width: 76px; height: 76px; border-radius: 8px; object-fit: cover; background: #e9e8e2; flex-shrink: 0; }
+  .t { flex: 1; min-width: 0; }
+  .top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .need { font-size: 13px; } .need b { font-size: 22px; }
+  .tag { font-size: 12px; padding: 1px 8px; border-radius: 6px; white-space: nowrap; }
+  .TODO { background: #F1EFE8; color: #444441; } .DONE { background: #EAF3DE; color: #27500A; }
+  .PART { background: #FAEEDA; color: #633806; } .NG { background: #FCEBEB; color: #791F1F; }
+  .chg { background: #FAEEDA; color: #633806; }
+  .lines { font-size: 14px; margin: 6px 0; }
+  .lines .short { color: #A32D2D; }
+  .sub { color: #888; font-size: 12px; }
+  .ops { display: flex; gap: 5px; }
+  .ops button { height: 38px; padding: 0 6px; border: 1px solid #bbb; border-radius: 8px; background: #fff; font-size: 13px; flex: 1; white-space: nowrap; }
+  .ops button.main { flex: 1.6; }
+  .ops button.main { background: #06C755; border-color: #06C755; color: #fff; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; padding: 10px 12px; box-shadow: 0 -1px 0 #e5e3db; }
+  .bar button { width: 100%; height: 46px; border: 0; border-radius: 10px; font-size: 16px; font-weight: 600; background: #A32D2D; color: #fff; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .tabs button { flex: 1; height: 40px; border: 1px solid #bbb; border-radius: 10px; background: #fff; font-size: 15px; }
+  .tabs button.on { background: #1a1a1a; border-color: #1a1a1a; color: #fff; }
+  .cust { background: #fff; border-radius: 12px; padding: 10px; margin-bottom: 10px; border: 1px solid #e5e3db; }
+  .cust .ch { display: flex; align-items: baseline; gap: 8px; padding-bottom: 6px; border-bottom: 1px solid #eee; margin-bottom: 6px; }
+  .cust .ch b { font-size: 17px; } .cust .ch .sum { margin-left: auto; font-size: 13px; color: #555; }
+  .ci { display: flex; gap: 8px; align-items: center; padding: 5px 0; }
+  .ci img { width: 52px; height: 52px; border-radius: 6px; object-fit: cover; background: #e9e8e2; flex-shrink: 0; }
+  .ci .q { font-size: 18px; font-weight: 600; min-width: 44px; }
+  .ci .x { flex: 1; min-width: 0; font-size: 13px; }
+  .ci.ng { opacity: .55; }
+  .tag.sb { background: #E1F5EE; color: #085041; }
+  .subg { border-left: 3px solid #9FE1CB; padding-left: 8px; margin: 6px 0 4px; }
+  .subg > b { color: #085041; font-size: 14px; }
+  #toast { position: fixed; left: 12px; right: 12px; bottom: 70px; padding: 10px 12px; border-radius: 10px; display: none; z-index: 9; white-space: pre-line; }
+  .center { text-align: center; padding: 40px 16px; color: #666; }
+</style>
+</head>
+<body>
+<header><span>現場確認</span><span class="st" id="st"></span></header>
+<main id="app"><div class="center">読み込み中…</div></main>
+<div class="bar"><button id="close">締切（受付終了）</button></div>
+<div id="toast"></div>
+
+<script>
+// GAS 部署網址（跟下單頁 index.html 用同一個）
+const API_URL = 'https://script.google.com/macros/s/AKfycbwjQK4vcmgDAeD-uJ424b-IM3ciq6mvAp1uILcIy27sGWsiBsx8_i7Rz6pAY9oO6DYeKg/exec';
+const CLS = { '未処理': 'TODO', '購入済': 'DONE', '一部': 'PART', '欠品': 'NG' };
+let S = null, busy = false;
+let VIEW = 'item';   // 'item' = 商品別、'cust' = お客様別
+
+function api(req) {
+  // 不加 Content-Type，瀏覽器就不會先送 CORS 預檢，GAS 才收得到
+  return fetch(API_URL, { method: 'POST', body: JSON.stringify(req) }).then(r => r.json());
+}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function toast(t, good) {
+  const e = document.getElementById('toast');
+  e.textContent = t; e.style.background = good ? '#EAF3DE' : '#FCEBEB'; e.style.color = good ? '#27500A' : '#791F1F'; e.style.display = 'block';
+  clearTimeout(toast.h); toast.h = setTimeout(() => e.style.display = 'none', 4000);
+}
+
+async function call(req, quiet) {
+  if (busy) return; busy = true;
+  try {
+    const r = await api(req);
+    if (r.needForce) {
+      busy = false;
+      if (confirm(r.msg)) return call({ action: 'staff_close', force: true });
+      return;
+    }
+    if (!r.ok) { toast(r.msg || 'エラー', false); return; }
+    S = r; render();
+    if (r.msg && !quiet) toast(r.msg, true);
+  } catch (e) { toast('通信エラー。もう一度お試しください', false); }
+  finally { busy = false; }
+}
+
+function render() {
+  const st = document.getElementById('st');
+  st.textContent = S.closed ? '締切済' : '受付中';
+  st.className = 'st' + (S.closed ? ' closed' : '');
+  const closeBtn = document.getElementById('close');
+  closeBtn.textContent = S.closed ? '受付を再開する' : '締切（受付終了）';
+  closeBtn.style.background = S.closed ? '#888780' : '#A32D2D';
+
+  // 注文が0件の商品は「変更あり」を出さない（全部取消された商品がずっと上に残らないように）
+  S.items.forEach(i => { i.flag = !!i.flag && i.need > 0; });
+  const items = S.items.slice().sort((a, b) =>
+    (b.flag - a.flag) || ((a.need > 0) - (b.need > 0)) * -1 || ((a.status !== '未処理') - (b.status !== '未処理')) || (b.need - a.need));
+  // 進度：只算「有人訂」的商品，處理完幾個 / 共幾個
+  const ordered = S.items.filter(i => i.need > 0);
+  const done = ordered.filter(i => i.status !== '未処理').length;
+
+  let h = `<div class="prog"><span>処理済</span><div class="b"><div style="width:${ordered.length ? Math.round(done / ordered.length * 100) : 0}%"></div></div>${done} / ${ordered.length}</div>`;
+  h += `<div class="tabs"><button data-view="item" class="${VIEW === 'item' ? 'on' : ''}">商品別</button><button data-view="cust" class="${VIEW === 'cust' ? 'on' : ''}">お客様別</button></div>`;
+  if (VIEW === 'cust') {
+    h += custView();
+    const app = document.getElementById('app');
+    app.innerHTML = h;
+    app.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { VIEW = b.dataset.view; render(); });
+    return;
+  }
+  h += `<div class="log"><b>変更履歴</b>` + (S.logs.length ? S.logs.map(l =>
+    `<div>${esc(l.time)}　${esc(l.type)}｜${esc(l.code)} ${esc(l.name)}｜${esc(l.no)} ${esc(l.text)}</div>`).join('') : '<div class="sub">まだありません</div>') + `</div>`;
+
+  if (!items.length) h += `<div class="center">写真を送ると、ここに商品が出ます</div>`;
+  items.forEach(i => {
+    const lines = i.lines.length ? i.lines.map(l => {
+      const short = (i.status === '一部' || i.status === '欠品') && l.got != null && l.got < l.qty;
+      return `<div class="${short ? 'short' : ''}">${esc(l.code)} ${esc(l.name)}${l.sub ? ` <span class="tag sb">${esc(l.sub)}</span>` : ''}　×${l.qty}${l.parts.length > 1 ? ` <span class="sub">(${l.parts.join('+')})</span>` : ''}${short ? ' → ' + l.got : ''}${l.memo ? ` <span class="sub">${esc(l.memo)}</span>` : ''}</div>`;
+    }).join('') : '<div class="sub">注文なし</div>';
+    h += `<div class="card ${i.flag ? 'flag' : ''}"><img src="${esc(i.url)}" loading="lazy" alt="">
+      <div class="t"><div class="top"><b>${esc(i.no.slice(-2))}</b>
+        <span class="need">必要 <b>${i.need}</b> 個${i.status === '一部' ? '　購入 ' + i.got : ''}${i.status === '未処理' && i.got ? '　<span class="sub">(購入済 ' + i.got + ')</span>' : ''}</span>
+        <span style="margin-left:auto;display:flex;gap:4px">${i.flag ? '<span class="tag chg">変更あり</span>' : ''}<span class="tag ${CLS[i.status] || 'TODO'}">${esc(i.status)}</span></span></div>
+        ${i.price || i.memo ? `<div class="sub">${i.price ? esc(i.price) + '円 ' : ''}${esc(i.memo || '')}</div>` : ''}
+        <div class="lines">${lines}</div>
+        ${S.closed || !i.need ? '' : `<div class="ops">
+          <button class="main" data-no="${esc(i.no)}" data-act="ok">全数購入</button>
+          <button data-no="${esc(i.no)}" data-act="pm" aria-label="一つ減らす">一部 −</button>
+          <button data-no="${esc(i.no)}" data-act="pp" aria-label="一つ増やす">＋</button>
+          <button data-no="${esc(i.no)}" data-act="ng">欠品</button></div>`}
+      </div></div>`;
+  });
+  const app = document.getElementById('app');
+  app.innerHTML = h;
+  app.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { VIEW = b.dataset.view; render(); });
+  app.querySelectorAll('[data-act]').forEach(b => b.onclick = () => call({ action: 'staff_set', no: b.dataset.no, act: b.dataset.act }));
+}
+
+// お客様別：会員番号ごとに「何を何個」まとめて表示
+function custView() {
+  const by = {};
+  S.items.forEach(i => i.lines.forEach(l => {
+    const k = l.code || '?';
+    (by[k] = by[k] || { code: k, name: l.name, rows: [] }).rows.push({ item: i, l: l });
+  }));
+  const list = Object.values(by).sort((a, b) => a.code.localeCompare(b.code));
+  if (!list.length) return `<div class="center">まだ注文がありません</div>`;
+  return `<div class="sub" style="margin-bottom:8px">${list.length} 名</div>` + list.map(c => {
+    const pcs = c.rows.reduce((a, r) => a + r.l.qty, 0);
+    const rowHtml = r => {
+      const i = r.item, l = r.l;
+      let st = '';
+      if (i.status === '欠品') st = '<span class="tag NG">欠品</span>';
+      else if (i.status === '一部' && l.got != null && l.got < l.qty) st = `<span class="tag PART">→ ${l.got}</span>`;
+      else if (i.status === '購入済' || i.status === '一部') st = '<span class="tag DONE">購入済</span>';
+      return `<div class="ci ${i.status === '欠品' ? 'ng' : ''}"><img src="${esc(i.url)}" loading="lazy" alt="">
+        <div class="q">×${l.qty}</div>
+        <div class="x"><b>${esc(i.no.slice(-2))}</b> ${st}${l.memo ? `<div class="sub">${esc(l.memo)}</div>` : ''}</div></div>`;
+    };
+    c.rows.sort((a, b) => (a.l.sub || '').localeCompare(b.l.sub || '') || a.item.no.localeCompare(b.item.no));
+    let rows = '';
+    if (c.rows.some(r => r.l.sub)) {
+      // 代理：再依子會員分組
+      const subs = [...new Set(c.rows.map(r => r.l.sub || '—'))];
+      rows = subs.map(sb => {
+        const rs = c.rows.filter(r => (r.l.sub || '—') === sb);
+        return `<div class="subg"><b>${esc(sb)}</b> <span class="sub">${rs.reduce((a, r) => a + r.l.qty, 0)} 個</span>${rs.map(rowHtml).join('')}</div>`;
+      }).join('');
+    } else rows = c.rows.map(rowHtml).join('');
+    return `<div class="cust"><div class="ch"><b>${esc(c.code)}</b><span>${esc(c.name)}</span><span class="sum">${c.rows.length} 品・${pcs} 個</span></div>${rows}</div>`;
+  }).join('');
+}
+
+document.getElementById('close').onclick = () => {
+  if (S && S.closed) {
+    if (confirm('受付を再開しますか？')) call({ action: 'staff_reopen' });
+    return;
+  }
+  if (confirm('締切しますか？お客様のグループに結果が通知されます。')) call({ action: 'staff_close' });
+};
+
+setInterval(() => { if (!busy) call({ action: 'staff_get' }, true); }, 10000);
+call({ action: 'staff_get' }, true);
+</script>
+</body>
+</html>
