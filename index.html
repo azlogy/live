@@ -6,6 +6,10 @@
 <title>今日連線商品</title>
 <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <style>
+  .hl { position: absolute; border: 3px solid #FF2D78; border-radius: 10px; box-shadow: 0 0 0 2px rgba(255,255,255,.9), 0 0 0 9999px rgba(0,0,0,.18); pointer-events: none; box-sizing: border-box; }
+  .cw { position: relative; overflow: hidden; width: 76px; height: 76px; border-radius: 8px; flex-shrink: 0; background: #e9e8e2; }
+  .cw img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; background: #f5f5f3; color: #1a1a1a; font-size: 15px; }
   header { background: #06C755; color: #fff; padding: 12px 14px; font-size: 17px; font-weight: 600; display: flex; align-items: center; gap: 8px; position: sticky; top: 0; z-index: 5; }
@@ -19,14 +23,17 @@
   .card.sel { border-color: #06C755; }
   .ph { position: relative; aspect-ratio: 1 / 1; background: #e9e8e2; }
   .ph img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
-  .ph::after { content: '🔍'; position: absolute; right: 6px; bottom: 6px; font-size: 13px; background: rgba(255,255,255,.85); border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  .ph::after { content: '🔍'; position: absolute; right: 6px; top: 6px; font-size: 13px; background: rgba(255,255,255,.85); border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; pointer-events: none; }
   .tag { position: absolute; top: 6px; left: 6px; font-size: 12px; padding: 2px 8px; border-radius: 8px; }
   .no { position: absolute; bottom: 6px; right: 6px; background: rgba(0,0,0,.55); color: #fff; font-size: 12px; padding: 1px 6px; border-radius: 6px; }
   .cb { padding: 8px; }
   .price { font-size: 15px; color: #C2410C; margin-top: 2px; }
   .price b { font-weight: 700; }
   .memo { font-size: 12px; color: #888; }
-  .pos { font-size: 12px; color: #0F6E56; background: #E1F5EE; display: inline-block; padding: 1px 7px; border-radius: 6px; margin-bottom: 3px; }
+  .pg { display: inline-grid; grid-template-columns: repeat(3, 5px); gap: 1.5px; vertical-align: middle; margin-right: 5px; flex: none; padding: 2px; background: #fff; border-radius: 3px; border: 1px solid #9FD9C4; }
+  .pg i { width: 5px; height: 5px; background: #D5EFE5; border-radius: 1px; }
+  .pg i.on { background: #E0457B; }
+  .pos { font-size: 12px; color: #0F6E56; background: #E1F5EE; display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 6px; margin-bottom: 3px; }
   .pname { font-size: 13px; line-height: 1.35; color: #333; min-height: 35px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .step { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
   .step button { width: 38px; height: 34px; border-radius: 8px; border: 1px solid #ccc; background: #fff; font-size: 18px; }
@@ -126,6 +133,37 @@ function num(v) { return Number(String(v || '').replace(/[^\d.]/g, '')) || 0; }
 
 // 一覧は小さい画像（100 枚でも軽い）；拡大時は大きい画像
 function sm(u) { return String(u || '').replace(/([?&]sz=)w\d+/, '$1w400'); }
+// 位置：「上段左」這種貨架用語客人看不懂 → 改成「左上」＋ 3×3 小格子標出在照片哪裡
+function posInfo(p) {
+  p = String(p || '');
+  const r = /上/.test(p) ? 0 : /下/.test(p) ? 2 : 1;
+  const c = /左/.test(p) ? 0 : /右/.test(p) ? 2 : 1;
+  const V = ['上', '', '下'], H = ['左', '', '右'];
+  let t = (H[c] + V[r]) || '中間';
+  if (!H[c] && V[r]) t = V[r] + '面中間';
+  if (H[c] && !V[r]) t = H[c] + '邊';
+  let g = '';
+  for (let i = 0; i < 9; i++) g += `<i class="${i === r * 3 + c ? 'on' : ''}"></i>`;
+  return { text: t, grid: `<span class="pg">${g}</span>` };
+}
+// 一張照片拆成好幾個商品時：卡片只放大顯示那個商品，並用粉紅框圈起來（AI 給的框）
+function fitCrop(img) {
+  const b = String(img.dataset.box || '').split(',').map(Number);
+  if (b.length !== 4 || !img.naturalWidth) return;
+  const nw = img.naturalWidth, nh = img.naturalHeight;
+  const x0 = b[1] / 1000 * nw, y0 = b[0] / 1000 * nh, x1 = b[3] / 1000 * nw, y1 = b[2] / 1000 * nh;
+  let side = Math.max(x1 - x0, y1 - y0) * 1.35;
+  side = Math.min(Math.max(side, Math.min(nw, nh) * 0.35), Math.max(nw, nh));
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const sx = side <= nw ? Math.min(Math.max(0, cx - side / 2), nw - side) : (nw - side) / 2;
+  const sy = side <= nh ? Math.min(Math.max(0, cy - side / 2), nh - side) : (nh - side) / 2;
+  const P = v => (v / side * 100) + '%';
+  Object.assign(img.style, { position: 'absolute', maxWidth: 'none', objectFit: 'fill', borderRadius: '0',
+    width: P(nw), height: P(nh), left: P(-sx), top: P(-sy) });
+  let hl = img.parentNode.querySelector('.hl');
+  if (!hl) { hl = document.createElement('i'); hl.className = 'hl'; img.parentNode.appendChild(hl); }
+  Object.assign(hl.style, { left: P(x0 - sx), top: P(y0 - sy), width: P(x1 - x0), height: P(y1 - y0) });
+}
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 function showBusy(text) {
@@ -225,9 +263,9 @@ function render() {
             </div>`).join('') + `<button class="addsub" data-add="${esc(it.no)}">＋ 分給其他子會員</button>`;
         }
         return `<div class="card ${q ? 'sel' : ''}">
-          <div class="ph"><img src="${esc(sm(it.url))}" loading="lazy" alt="">${tag}<span class="no">${esc(it.no.slice(5))}</span></div>
+          <div class="ph" style="overflow:hidden"><img src="${esc(sm(it.url))}" loading="lazy" alt=""${it.box && /-\d+$/.test(it.no) ? ` data-box="${esc(it.box)}" onload="fitCrop(this)"` : ''}>${tag}<span class="no">${esc(it.no.slice(5))}</span></div>
           <div class="cb">
-          ${it.pos && /-\d+$/.test(it.no) ? `<div class="pos">📍 照片${esc(it.pos)}</div>` : ''}${it.name ? `<div class="pname">${esc(it.name)}</div>` : ''}${yen(it.price) ? `<div class="price"><b>${yen(it.price)}</b> <span class="muted">含稅</span></div>` : ''}${it.memo ? `<div class="memo">${esc(it.memo)}</div>` : ''}${ctl}
+          ${it.pos && /-\d+$/.test(it.no) ? `<div class="pos">${posInfo(it.pos).grid}照片${posInfo(it.pos).text}的</div>` : ''}${it.name ? `<div class="pname">${esc(it.name)}</div>` : ''}${yen(it.price) ? `<div class="price"><b>${yen(it.price)}</b> <span class="muted">含稅</span></div>` : ''}${it.memo ? `<div class="memo">${esc(it.memo)}</div>` : ''}${ctl}
           </div></div>`;
       }).join('') + `</div>`;
     }
@@ -383,13 +421,15 @@ document.addEventListener('visibilitychange', () => {
 <style>
 #lb{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:9999;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
 #lb .wrap{min-height:100%;display:flex;align-items:center;justify-content:center}
-#lb img{max-width:100%;max-height:100vh;display:block;cursor:zoom-in}
-#lb.big img{max-width:none;max-height:none;width:200%;cursor:zoom-out}
+#lb .lbw{position:relative;display:inline-block;line-height:0}
+#lb img{max-width:100vw;max-height:100vh;display:block;cursor:zoom-in}
+#lb.big img{max-width:none;max-height:none;width:200vw;cursor:zoom-out}
+#lb .lbhl{position:absolute;border:4px solid #FF2D78;border-radius:12px;box-shadow:0 0 0 2px #fff;pointer-events:none;display:none}
 #lb .x{position:fixed;top:12px;right:12px;width:44px;height:44px;border-radius:50%;border:0;background:rgba(255,255,255,.9);font-size:22px;font-weight:bold;color:#333;z-index:10000}
 #lb .hint{position:fixed;bottom:16px;left:0;right:0;text-align:center;color:#ddd;font-size:13px;pointer-events:none}
 .zoomable{cursor:zoom-in}
 </style>
-<div id="lb"><button class="x" aria-label="關閉">✕</button><div class="wrap"><img alt=""></div><div class="hint">點照片可放大，點旁邊關閉</div></div>
+<div id="lb"><button class="x" aria-label="關閉">✕</button><div class="wrap"><span class="lbw"><img alt=""><i class="lbhl"></i></span></div><div class="hint">點照片可放大，點旁邊關閉</div></div>
 <script>
 (function () {
   const lb = document.getElementById('lb'), im = lb.querySelector('img');
@@ -399,6 +439,11 @@ document.addEventListener('visibilitychange', () => {
     if (t.tagName === 'IMG' && !lb.contains(t) && t.closest('.ph, .line, .row, .card')) {
       e.preventDefault(); e.stopPropagation();
       im.src = t.src; im.src = big(t.src);
+      // 有商品框就在大圖上也圈起來
+      const hl = lb.querySelector('.lbhl'), bx = String(t.dataset.box || '').split(',').map(Number);
+      if (bx.length === 4 && bx.every(v => v >= 0)) {
+        Object.assign(hl.style, { display: 'block', top: bx[0] / 10 + '%', left: bx[1] / 10 + '%', height: (bx[2] - bx[0]) / 10 + '%', width: (bx[3] - bx[1]) / 10 + '%' });
+      } else hl.style.display = 'none';
       lb.classList.remove('big'); lb.style.display = 'block'; document.body.style.overflow = 'hidden';
     }
   }, true);
