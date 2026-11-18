@@ -31,7 +31,17 @@
   .lines .short { color: #A32D2D; }
   .sub { color: #888; font-size: 12px; }
   .ops { display: flex; gap: 5px; }
-  .ops button { height: 38px; padding: 0 6px; border: 1px solid #bbb; border-radius: 8px; background: #fff; font-size: 13px; flex: 1; white-space: nowrap; }
+  .ops button { height: 40px; padding: 0 6px; border: 1px solid #bbb; border-radius: 9px; background: #fff; font-size: 13px; flex: 1; white-space: nowrap;
+                 box-shadow: 0 3px 0 #d3d1c7; transition: transform .06s, box-shadow .06s; -webkit-tap-highlight-color: transparent; }
+  .ops button:active, .ops button.pressed { transform: translateY(2px); box-shadow: 0 1px 0 #d3d1c7; background: #F1EFE8; }
+  .ops button.main { box-shadow: 0 3px 0 #04913E; }
+  .ops button.main:active, .ops button.main.pressed { box-shadow: 0 1px 0 #04913E; background: #05A045; }
+  .card.done-flash { animation: df 1.2s ease-out; }
+  @keyframes df { 0% { background: #EAF3DE; } 100% { background: #fff; } }
+  #busy { position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 20; display: none; align-items: center; justify-content: center; }
+  #busy .bx { background: #fff; border-radius: 16px; padding: 22px 30px; display: flex; flex-direction: column; align-items: center; gap: 12px; font-size: 16px; font-weight: 700; box-shadow: 0 8px 30px rgba(0,0,0,.18); }
+  .spin { width: 40px; height: 40px; border: 5px solid #d8f3e3; border-top-color: #06C755; border-radius: 50%; animation: sp .8s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
   .ops button.main { flex: 1.6; }
   .ops button.main { background: #06C755; border-color: #06C755; color: #fff; }
   .bar { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; padding: 10px 12px; box-shadow: 0 -1px 0 #e5e3db; }
@@ -54,7 +64,7 @@
   .tag.sb { background: #E1F5EE; color: #085041; }
   .subg { border-left: 3px solid #9FE1CB; padding-left: 8px; margin: 6px 0 4px; }
   .subg > b { color: #085041; font-size: 14px; }
-  #toast { position: fixed; left: 12px; right: 12px; bottom: 70px; padding: 10px 12px; border-radius: 10px; display: none; z-index: 9; white-space: pre-line; }
+  #toast { position: fixed; left: 12px; right: 12px; bottom: 76px; padding: 14px 14px; font-size: 16px; font-weight: 700; text-align: center; box-shadow: 0 4px 16px rgba(0,0,0,.15); border-radius: 10px; display: none; z-index: 9; white-space: pre-line; }
   .center { text-align: center; padding: 40px 16px; color: #666; }
 </style>
 </head>
@@ -63,6 +73,7 @@
 <main id="app"><div class="center">読み込み中…</div></main>
 <div class="bar"><button id="close">締切（受付終了）</button></div>
 <div id="toast"></div>
+<div id="busy"><div class="bx"><div class="spin"></div><div id="busyText">処理中…</div></div></div>
 
 <script>
 // GAS 部署網址（跟下單頁 index.html 用同一個）
@@ -75,15 +86,24 @@ function api(req) {
   // 不加 Content-Type，瀏覽器就不會先送 CORS 預檢，GAS 才收得到
   return fetch(API_URL, { method: 'POST', body: JSON.stringify(req) }).then(r => r.json());
 }
+// 一覧は小さい画像（100 枚でも軽い）；拡大時は大きい画像
+function sm(u) { return String(u || '').replace(/([?&]sz=)w\d+/, '$1w400'); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function toast(t, good) {
   const e = document.getElementById('toast');
   e.textContent = t; e.style.background = good ? '#EAF3DE' : '#FCEBEB'; e.style.color = good ? '#27500A' : '#791F1F'; e.style.display = 'block';
-  clearTimeout(toast.h); toast.h = setTimeout(() => e.style.display = 'none', 4000);
+  clearTimeout(toast.h); toast.h = setTimeout(() => e.style.display = 'none', 3000);
 }
+function showBusy(t) {
+  document.getElementById('busyText').textContent = t || '処理中…';
+  document.getElementById('busy').style.display = t === false ? 'none' : 'flex';
+}
+// ボタンごとの完了メッセージ
+const DONE_MSG = { ok: '全数購入にしました', ng: '欠品にしました', pm: '購入数を1つ減らしました', pp: '購入数を1つ増やしました', del: '削除しました' };
 
 async function call(req, quiet) {
   if (busy) return; busy = true;
+  if (!quiet) showBusy(req.action === 'staff_close' ? '締切中…' : '処理中…');
   try {
     const r = await api(req);
     if (r.needForce) {
@@ -92,10 +112,16 @@ async function call(req, quiet) {
       return;
     }
     if (!r.ok) { toast(r.msg || 'エラー', false); return; }
+    if (quiet && qRunning) return;   // 裏で保存中は上書きしない
     S = r; render();
-    if (r.msg && !quiet) toast(r.msg, true);
+    if (req.action === 'staff_set' && !quiet) {
+      // 完了：メッセージ＋そのカードを緑に光らせる
+      toast('✓ ' + req.no.slice(5) + '　' + (DONE_MSG[req.act] || '更新しました'), true);
+      const c = document.querySelector(`[data-card="${CSS.escape(req.no)}"]`);
+      if (c) { c.classList.add('done-flash'); }
+    } else if (r.msg && !quiet) toast('✓ ' + r.msg, true);
   } catch (e) { toast('通信エラー。もう一度お試しください', false); }
-  finally { busy = false; }
+  finally { busy = false; showBusy(false); }
 }
 
 function render() {
@@ -115,6 +141,7 @@ function render() {
   const done = ordered.filter(i => i.status !== '未処理').length;
 
   let h = `<div class="prog"><span>処理済</span><div class="b"><div style="width:${ordered.length ? Math.round(done / ordered.length * 100) : 0}%"></div></div>${done} / ${ordered.length}</div>`;
+  if (S.analyzing) h += `<div class="sub" style="margin-bottom:8px">🔍 写真を解析中：${S.analyzing} 枚（数秒で表示されます）</div>`;
   h += `<div class="stores ${S.store ? '' : 'need'}"><span>${S.store ? '本日の店舗' : '⚠️ 本日の店舗を選んでください'}</span>${(S.stores || []).map(st => `<button data-store="${esc(st)}" class="${S.store === st ? 'on' : ''}">${esc(st)}</button>`).join('')}</div>`;
   h += `<div class="tabs"><button data-view="item" class="${VIEW === 'item' ? 'on' : ''}">商品別</button><button data-view="cust" class="${VIEW === 'cust' ? 'on' : ''}">お客様別</button></div>`;
   if (VIEW === 'cust') {
@@ -134,10 +161,11 @@ function render() {
       const short = (i.status === '一部' || i.status === '欠品') && l.got != null && l.got < l.qty;
       return `<div class="${short ? 'short' : ''}">${esc(l.code)} ${esc(l.name)}${l.sub ? ` <span class="tag sb">${esc(l.sub)}</span>` : ''}　×${l.qty}${l.parts.length > 1 ? ` <span class="sub">(${l.parts.join('+')})</span>` : ''}${short ? ' → ' + l.got : ''}${l.memo ? ` <span class="sub">${esc(l.memo)}</span>` : ''}</div>`;
     }).join('') : '<div class="sub">注文なし</div>';
-    h += `<div class="card ${i.flag ? 'flag' : ''}"><img src="${esc(i.url)}" loading="lazy" alt="">
-      <div class="t"><div class="top"><b>${esc(i.no.slice(-2))}</b>
+    h += `<div class="card ${i.flag ? 'flag' : ''}" data-card="${esc(i.no)}"><img src="${esc(sm(i.url))}" loading="lazy" alt="">
+      <div class="t"><div class="top"><b>${esc(i.no.slice(5))}</b>
         <span class="need">必要 <b>${i.need}</b> 個${i.status === '一部' ? '　購入 ' + i.got : ''}${i.status === '未処理' && i.got ? '　<span class="sub">(購入済 ' + i.got + ')</span>' : ''}</span>
         <span style="margin-left:auto;display:flex;gap:4px;align-items:center">${i.flag ? '<span class="tag chg">変更あり</span>' : ''}<span class="tag ${CLS[i.status] || 'TODO'}">${esc(i.status)}</span>${!S.closed && !i.need ? `<button class="del" data-del="${esc(i.no)}" aria-label="削除">削除</button>` : ''}</span></div>
+        ${i.pos && /-\d+$/.test(i.no) ? `<span class="tag sb">📍${esc(i.pos)}</span>` : ''}
         ${i.name || i.nameJa ? `<div style="font-size:13px;line-height:1.35">${esc(i.nameJa || i.name)}${i.nameJa && i.name ? `<div class="sub">${esc(i.name)}</div>` : ''}</div>` : ''}
         ${i.price || i.memo ? `<div class="sub">${i.price ? '税込 ' + esc(i.price) + '円 ' : ''}${esc(i.memo || '')}</div>` : ''}
         <div class="lines">${lines}</div>
@@ -153,9 +181,64 @@ function render() {
   app.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { VIEW = b.dataset.view; render(); });
   bindStores(app);
   app.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
-    if (confirm(b.dataset.del.slice(-2) + ' 番の商品を削除しますか？\nお客様の注文ページからも消えます。')) call({ action: 'staff_set', no: b.dataset.del, act: 'del' });
+    if (confirm(b.dataset.del.slice(5) + ' 番の商品を削除しますか？\nお客様の注文ページからも消えます。')) call({ action: 'staff_set', no: b.dataset.del, act: 'del' });
   });
-  app.querySelectorAll('[data-act]').forEach(b => b.onclick = () => call({ action: 'staff_set', no: b.dataset.no, act: b.dataset.act }));
+  app.querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
+    if (navigator.vibrate) navigator.vibrate(30);
+    quickSet(b.dataset.no, b.dataset.act);
+  });
+}
+
+/* 全数購入・一部・欠品：押した瞬間に画面を更新し、保存は裏で順番に送る（待たない）
+ * 保存に失敗したら赤いメッセージを出して最新の状態に戻す */
+const Q = [];
+let qRunning = false;
+function quickSet(no, act) {
+  const i = S && S.items.find(x => x.no === no);
+  if (!i || S.closed) return;
+  const need = i.need;
+  let st, got;
+  if (act === 'ok') { st = '購入済'; got = need; }
+  else if (act === 'ng') { st = '欠品'; got = 0; }
+  else {
+    let g = (i.status !== '未処理' || i.got > 0) ? i.got : need;
+    if (i.status === '欠品') g = 0;
+    g += act === 'pp' ? 1 : -1;
+    g = Math.max(0, Math.min(need, g));
+    if (g >= need && need > 0) { st = '購入済'; got = need; }
+    else if (g <= 0) { st = '欠品'; got = 0; }
+    else { st = '一部'; got = g; }
+  }
+  i.status = st; i.got = got; i.flag = false;
+  if (st === '購入済') i.lines.forEach(l => l.got = l.qty);
+  if (st === '欠品') i.lines.forEach(l => l.got = 0);
+  render();
+  const c = document.querySelector(`[data-card="${CSS.escape(no)}"]`);
+  if (c) c.classList.add('done-flash');
+  toast('✓ ' + no.slice(5) + '　' + (st === '一部' ? '一部購入（' + got + ' 個）にしました' : (DONE_MSG[act] || '更新しました')), true);
+  Q.push({ action: 'staff_set', no: no, act: act });
+  runQ();
+}
+async function runQ() {
+  if (qRunning) return; qRunning = true;
+  setSaving(true);
+  while (Q.length) {
+    const req = Q.shift();
+    try {
+      const r = await api(req);
+      if (!r.ok) { toast('⚠️ ' + req.no.slice(5) + ' 保存できませんでした：' + (r.msg || 'エラー'), false); Q.length = 0; }
+      if (!Q.length && r.items) { S = r; render(); }
+    } catch (e) {
+      toast('⚠️ ' + req.no.slice(5) + ' 通信エラー。もう一度押してください', false); Q.length = 0;
+      call({ action: 'staff_get' }, true);
+    }
+  }
+  qRunning = false; setSaving(false);
+}
+function setSaving(on) {
+  let e = document.getElementById('saving');
+  if (!e) { e = document.createElement('div'); e.id = 'saving'; e.style.cssText = 'position:fixed;top:8px;right:8px;background:#FFF4E0;color:#8A5300;font-size:12px;padding:4px 10px;border-radius:12px;z-index:50;display:none'; e.textContent = '保存中…'; document.body.appendChild(e); }
+  e.style.display = on ? 'block' : 'none';
 }
 
 // 店舗ボタン：押すとその店の税ルールで価格を計算し直す
@@ -185,7 +268,7 @@ function custView() {
       else if (i.status === '購入済' || i.status === '一部') st = '<span class="tag DONE">購入済</span>';
       return `<div class="ci ${i.status === '欠品' ? 'ng' : ''}"><img src="${esc(i.url)}" loading="lazy" alt="">
         <div class="q">×${l.qty}</div>
-        <div class="x"><b>${esc(i.no.slice(-2))}</b> ${st}${i.nameJa || i.name ? `<div style="font-size:12px">${esc(i.nameJa || i.name)}</div>` : ''}${l.memo ? `<div class="sub">${esc(l.memo)}</div>` : ''}</div></div>`;
+        <div class="x"><b>${esc(i.no.slice(5))}</b> ${st}${i.nameJa || i.name ? `<div style="font-size:12px">${esc(i.nameJa || i.name)}</div>` : ''}${l.memo ? `<div class="sub">${esc(l.memo)}</div>` : ''}</div></div>`;
     };
     c.rows.sort((a, b) => (a.l.sub || '').localeCompare(b.l.sub || '') || a.item.no.localeCompare(b.item.no));
     let rows = '';
@@ -209,10 +292,42 @@ document.getElementById('close').onclick = () => {
   if (confirm('締切しますか？お客様のグループに結果が通知されます。')) call({ action: 'staff_close' });
 };
 
-setInterval(() => { if (!busy && !document.hidden) call({ action: 'staff_get' }, true); }, 10000);
+setInterval(() => { if (!busy && !qRunning && !document.hidden) call({ action: 'staff_get' }, true); }, 10000);
 // 從 LINE 或相機切回來時，馬上更新一次
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !busy) call({ action: 'staff_get' }, true); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !busy && !qRunning) call({ action: 'staff_get' }, true); });
 call({ action: 'staff_get' }, true);
+</script>
+<!-- 照片放大：點商品照片就全螢幕顯示，點照片可再放大 2 倍，點外面或 ✕ 關閉 -->
+<style>
+#lb{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:9999;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
+#lb .wrap{min-height:100%;display:flex;align-items:center;justify-content:center}
+#lb img{max-width:100%;max-height:100vh;display:block;cursor:zoom-in}
+#lb.big img{max-width:none;max-height:none;width:200%;cursor:zoom-out}
+#lb .x{position:fixed;top:12px;right:12px;width:44px;height:44px;border-radius:50%;border:0;background:rgba(255,255,255,.9);font-size:22px;font-weight:bold;color:#333;z-index:10000}
+#lb .hint{position:fixed;bottom:16px;left:0;right:0;text-align:center;color:#ddd;font-size:13px;pointer-events:none}
+.zoomable{cursor:zoom-in}
+</style>
+<div id="lb"><button class="x" aria-label="閉じる">✕</button><div class="wrap"><img alt=""></div><div class="hint">写真をタップで拡大・外側をタップで閉じる</div></div>
+<script>
+(function () {
+  const lb = document.getElementById('lb'), im = lb.querySelector('img');
+  const big = u => String(u || '').replace(/([?&]sz=)w\d+/, '$1w2000');
+  document.addEventListener('click', e => {
+    const t = e.target;
+    if (t.tagName === 'IMG' && !lb.contains(t) && t.closest('.card')) {
+      e.preventDefault(); e.stopPropagation();
+      im.src = t.src; im.src = big(t.src);
+      lb.classList.remove('big'); lb.style.display = 'block'; document.body.style.overflow = 'hidden';
+    }
+  }, true);
+  const close = () => { lb.style.display = 'none'; im.removeAttribute('src'); document.body.style.overflow = ''; };
+  lb.querySelector('.x').onclick = close;
+  lb.addEventListener('click', e => {
+    if (e.target === im) { lb.classList.toggle('big'); return; }
+    if (e.target !== lb.querySelector('.x')) close();
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+})();
 </script>
 </body>
 </html>
