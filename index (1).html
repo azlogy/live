@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>今日連線商品</title>
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; background: #f5f5f3; color: #1a1a1a; font-size: 15px; }
+  header { background: #06C755; color: #fff; padding: 12px 14px; font-size: 17px; font-weight: 600; display: flex; align-items: center; gap: 8px; position: sticky; top: 0; z-index: 5; }
+  header .who { margin-left: auto; font-size: 13px; font-weight: 400; opacity: .95; }
+  main { padding: 12px; padding-bottom: 90px; }
+  .box { background: #fff; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .banner { border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; }
+  .ok { background: #EAF3DE; color: #27500A; } .ng { background: #FCEBEB; color: #791F1F; } .info { background: #E6F1FB; color: #0C447C; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .card { background: #fff; border-radius: 12px; overflow: hidden; border: 2px solid transparent; }
+  .card.sel { border-color: #06C755; }
+  .ph { position: relative; aspect-ratio: 1 / 1; background: #e9e8e2; }
+  .ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .tag { position: absolute; top: 6px; left: 6px; font-size: 12px; padding: 2px 8px; border-radius: 8px; }
+  .no { position: absolute; bottom: 6px; right: 6px; background: rgba(0,0,0,.55); color: #fff; font-size: 12px; padding: 1px 6px; border-radius: 6px; }
+  .cb { padding: 8px; }
+  .price { font-size: 14px; color: #444; min-height: 20px; }
+  .memo { font-size: 12px; color: #888; }
+  .step { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+  .step button { width: 38px; height: 34px; border-radius: 8px; border: 1px solid #ccc; background: #fff; font-size: 18px; }
+  .step b { font-size: 18px; }
+  input[type=text] { width: 100%; height: 36px; border: 1px solid #ccc; border-radius: 8px; padding: 0 10px; font-size: 14px; margin-top: 6px; }
+  .btn { width: 100%; height: 46px; border: 0; border-radius: 10px; background: #06C755; color: #fff; font-size: 16px; font-weight: 600; }
+  .btn:disabled { background: #b8b8b2; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; padding: 10px 12px; box-shadow: 0 -1px 0 #e5e3db; z-index: 5; }
+  h3 { margin: 4px 0 10px; font-size: 16px; }
+  .line { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid #eee; }
+  .line:first-of-type { border-top: 0; }
+  .line img { width: 64px; height: 64px; border-radius: 8px; object-fit: cover; background: #e9e8e2; flex-shrink: 0; }
+  .line .t { flex: 1; min-width: 0; }
+  .ops { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
+  .ops button { height: 32px; min-width: 36px; border: 1px solid #ccc; border-radius: 8px; background: #fff; font-size: 14px; padding: 0 10px; }
+  .pill { font-size: 12px; padding: 1px 7px; border-radius: 6px; }
+  .muted { color: #888; font-size: 13px; }
+  .center { text-align: center; padding: 40px 16px; color: #666; }
+  #toast { position: fixed; left: 12px; right: 12px; bottom: 78px; z-index: 9; display: none; white-space: pre-line; }
+</style>
+</head>
+<body>
+<header><span>今日連線商品</span><span class="who" id="who"></span></header>
+<main id="app"><div class="center">載入中…</div></main>
+<div class="bar" id="bar" style="display:none"><button class="btn" id="submit">送出訂單</button></div>
+<div id="toast" class="banner"></div>
+
+<script>
+// ===== 設定：只要改這兩行 =====
+const LIFF_ID = '2009296855-h6x6FV1n';
+const API_URL = '把這裡換成你的GAS部署網址（結尾是 /exec）';
+// ===============================
+let S = null;          // 伺服器回傳的狀態
+let cart = {};         // { 商品番号: 數量 }
+let memo = {};         // { 商品番号: 備註 }
+let idToken = '';
+let busy = false;
+
+// 呼叫後端（GAS 的 doPost）
+function api(req) {
+  req.idToken = idToken;
+  // 不加 Content-Type（預設 text/plain），瀏覽器就不會先送 CORS 預檢，GAS 才收得到
+  return fetch(API_URL, { method: 'POST', body: JSON.stringify(req) }).then(r => r.json());
+}
+
+function toast(text, good) {
+  const t = document.getElementById('toast');
+  t.textContent = text; t.className = 'banner ' + (good ? 'ok' : 'ng'); t.style.display = 'block';
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = 'none', 3500);
+}
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+async function call(req, quiet) {
+  if (busy) return; busy = true;
+  try {
+    const r = await api(req);
+    if (!r.ok) {
+      toast(r.msg || '發生錯誤', false);
+      if (r.relogin) setTimeout(() => { liff.logout(); liff.login({ redirectUri: location.href }); }, 1500);
+    } else {
+      S = r; render();
+      if (r.msg && !quiet) toast(r.msg, true);
+    }
+    return r;
+  } catch (e) {
+    toast('連線失敗，請稍後再試', false);
+  } finally { busy = false; }
+}
+
+function render() {
+  const app = document.getElementById('app');
+  document.getElementById('who').textContent = S.member ? S.member + '　' + (S.name || '') : '';
+
+  // 還沒綁定會員編號
+  if (!S.member) {
+    document.getElementById('bar').style.display = 'none';
+    app.innerHTML = `<div class="box"><h3>第一次使用</h3>
+      <div class="muted">請輸入你的會員編號，之後就會自動記住，不用再輸入。</div>
+      <input type="text" id="code" placeholder="例如 NL012" autocapitalize="characters">
+      <div style="height:10px"></div><button class="btn" id="bind">確認</button></div>`;
+    document.getElementById('bind').onclick = () => {
+      const v = document.getElementById('code').value.trim();
+      if (!v) { toast('請輸入會員編號', false); return; }
+      call({ action: 'bind', code: v });
+    };
+    return;
+  }
+
+  let h = '';
+  if (S.closed) h += `<div class="banner info">本場已截止收單，下面是你的訂單結果。</div>`;
+
+  // 商品
+  if (!S.closed) {
+    if (!S.items.length) h += `<div class="center">店員還沒上傳商品，請稍等一下<br><span class="muted">頁面會自動更新</span></div>`;
+    else {
+      const ordered = {};
+      S.mine.forEach(o => { if (!o.cancelled) ordered[o.no] = o.qty; });
+      h += `<div class="grid">` + S.items.map(it => {
+        const q = cart[it.no] || 0;
+        const tag = it.sold ? `<span class="tag ng">已售完</span>` : (ordered[it.no] ? `<span class="tag ok">已訂 ${ordered[it.no]}</span>` : '');
+        return `<div class="card ${q ? 'sel' : ''}">
+          <div class="ph"><img src="${esc(it.url)}" loading="lazy" alt="">${tag}<span class="no">${esc(it.no.slice(-2))}</span></div>
+          <div class="cb"><div class="price">${it.price ? esc(it.price) + ' 円' : '<span class="muted">價格待確認</span>'}</div>
+          ${it.memo ? `<div class="memo">${esc(it.memo)}</div>` : ''}
+          ${it.sold ? '<div class="muted" style="margin-top:6px">這個已經買不到了</div>' : `
+          <div class="step"><button data-no="${esc(it.no)}" data-d="-1" aria-label="減少">−</button><b>${q}</b><button data-no="${esc(it.no)}" data-d="1" aria-label="增加">＋</button></div>
+          ${q ? `<input type="text" data-memo="${esc(it.no)}" placeholder="備註：顏色、尺寸" value="${esc(memo[it.no] || '')}">` : ''}`}
+          </div></div>`;
+      }).join('') + `</div>`;
+    }
+  }
+
+  // 我的訂單
+  h += `<div class="box" style="margin-top:14px"><h3>我的訂單</h3>`;
+  if (!S.mine.length) h += `<div class="muted">還沒有訂單</div>`;
+  S.mine.forEach(o => {
+    const bought = o.itemStatus === '購入済' || o.itemStatus === '一部';
+    let st = '';
+    if (o.cancelled) st = `<span class="pill" style="background:#F1EFE8;color:#444">已取消</span>`;
+    else if (o.itemStatus === '欠品') st = `<span class="pill ng">缺貨取消</span>`;
+    else if (o.got != null && o.got < o.qty) st = `<span class="pill ng">只買到 ${o.got}</span>`;
+    else if (bought) st = `<span class="pill ok">已買到</span>`;
+    const lock = o.cancelled || o.itemStatus === '欠品' || S.closed;
+    h += `<div class="line" style="${o.cancelled ? 'opacity:.5' : ''}"><img src="${esc(o.url || '')}" alt="">
+      <div class="t"><div>${esc(o.no)} ${st}</div>
+      <div style="font-size:17px;font-weight:600">×${o.qty} ${o.parts.length > 1 ? `<span class="muted">(${o.parts.join('+')})</span>` : ''}</div>
+      ${lock ? (o.memo ? `<div class="muted">${esc(o.memo)}</div>` : '') : `
+      <div class="ops"><button data-op="-" data-id="${o.id}" aria-label="減少">−</button><button data-op="+" data-id="${o.id}" aria-label="增加">＋</button><button data-op="x" data-id="${o.id}">取消</button></div>
+      <input type="text" data-om="${o.id}" placeholder="備註" value="${esc(o.memo)}">`}
+      </div></div>`;
+  });
+  h += `</div>`;
+  if (!S.closed) h += `<div class="muted" style="text-align:center">截止前都可以追加、改數量、改備註或取消<br>店員已經買到的商品只能追加</div>`;
+  app.innerHTML = h;
+
+  // 綁事件
+  app.querySelectorAll('[data-d]').forEach(b => b.onclick = () => {
+    const no = b.dataset.no; cart[no] = Math.max(0, Math.min(99, (cart[no] || 0) + Number(b.dataset.d)));
+    if (!cart[no]) { delete cart[no]; delete memo[no]; }
+    render();
+  });
+  app.querySelectorAll('[data-memo]').forEach(i => i.oninput = () => memo[i.dataset.memo] = i.value);
+  app.querySelectorAll('[data-op]').forEach(b => b.onclick = () => {
+    if (b.dataset.op === 'x' && !confirm('確定要取消這筆訂單嗎？')) return;
+    call({ action: 'update', orderId: b.dataset.id, op: b.dataset.op });
+  });
+  app.querySelectorAll('[data-om]').forEach(i => i.onchange = () => call({ action: 'update', orderId: i.dataset.om, op: 'memo', memo: i.value }));
+
+  const n = Object.values(cart).reduce((a, b) => a + b, 0);
+  const bar = document.getElementById('bar');
+  bar.style.display = S.closed ? 'none' : 'block';
+  const btn = document.getElementById('submit');
+  btn.textContent = n ? `送出訂單（${Object.keys(cart).length} 項，共 ${n} 個）` : '選好數量後送出';
+  btn.disabled = !n;
+}
+
+document.getElementById('submit').onclick = async () => {
+  const list = Object.keys(cart).map(no => ({ no: no, q: cart[no], memo: memo[no] || '' }));
+  if (!list.length) { toast('請至少選一個商品的數量', false); return; }
+  const r = await call({ action: 'submit', cart: list });
+  if (r && r.ok) { cart = {}; memo = {}; render(); }
+};
+
+// 沒有在選東西、沒有在打字時，每 20 秒自動更新（看新上架的商品、售完狀態）
+setInterval(() => {
+  if (!S || !S.member || S.closed || Object.keys(cart).length || busy) return;
+  if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+  call({ action: 'init' }, true);
+}, 20000);
+
+(async () => {
+  try {
+    await liff.init({ liffId: LIFF_ID });
+    if (API_URL.indexOf('https://script.google.com/') !== 0) {
+      document.getElementById('app').innerHTML = '<div class="center">網頁設定還沒完成（API_URL）</div>';
+      return;
+    }
+    // 電腦或一般瀏覽器：先跳到 LINE 登入，登入完會自動回到這頁
+    if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+    idToken = liff.getIDToken();
+    call({ action: 'init' }, true);
+  } catch (e) {
+    document.getElementById('app').innerHTML = '<div class="center">無法開啟頁面，請從 LINE 裡打開連結。<br><span class="muted">' + esc(e.message || e) + '</span></div>';
+  }
+})();
+</script>
+</body>
+</html>
