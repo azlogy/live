@@ -112,9 +112,16 @@ function posInfo(p) {
 // 一張照片拆成好幾個商品時：卡片只放大顯示那個商品，並用粉紅框圈起來（AI 給的框）
 // 算好的大小記在 NAT，下次重畫（按＋−）直接套用，照片不會閃一下、抖一下
 const NAT = {};
+// 一張照片拆出來的商品（編號像 1119-33-1）才圈框；1119-33 這種單一商品不用
+function isSplit(no) { return /^\d{4}-\d+-\d+$/.test(String(no || '')); }
+// 框太細、太小（AI 框錯）就不用，顯示整張照片
+function boxOk(b) {
+  const w = b[3] - b[1], h = b[2] - b[0];
+  return w > 0 && h > 0 && w * h >= 15000 && w / h <= 5 && h / w <= 5;
+}
 function cropCalc(nw, nh, boxStr) {
   const b = String(boxStr || '').split(',').map(Number);
-  if (b.length !== 4 || !nw) return null;
+  if (b.length !== 4 || !nw || !boxOk(b)) return null;
   const x0 = b[1] / 1000 * nw, y0 = b[0] / 1000 * nh, x1 = b[3] / 1000 * nw, y1 = b[2] / 1000 * nh;
   const bw = x1 - x0, bh = y1 - y0;
   let side = Math.max(Math.max(bw, bh) * 1.3, Math.min(nw, nh) * 0.35);
@@ -222,11 +229,11 @@ function render() {
       const short = (i.status === '一部' || i.status === '欠品') && l.got != null && l.got < l.qty;
       return `<div class="${short ? 'short' : ''}">${esc(l.code)} ${esc(l.name)}${l.sub ? ` <span class="tag sb">${esc(l.sub)}</span>` : ''}　×${l.qty}${l.parts.length > 1 ? ` <span class="sub">(${l.parts.join('+')})</span>` : ''}${short ? ' → ' + l.got : ''}${l.memo ? ` <span class="sub">${esc(l.memo)}</span>` : ''}</div>`;
     }).join('') : '<div class="sub">注文なし</div>';
-    h += `<div class="card ${i.flag ? 'flag' : ''}" data-card="${esc(i.no)}"><span class="cw">${cropImg(i.url, i.box, /-\d+$/.test(i.no))}</span>
+    h += `<div class="card ${i.flag ? 'flag' : ''}" data-card="${esc(i.no)}"><span class="cw">${cropImg(i.url, i.box, isSplit(i.no))}</span>
       <div class="t"><div class="top"><b>${esc(i.no.slice(5))}</b>
         <span class="need">必要 <b>${i.need}</b> 個${i.status === '一部' ? '　購入 ' + i.got : ''}${i.status === '未処理' && i.got ? '　<span class="sub">(購入済 ' + i.got + ')</span>' : ''}</span>
         <span style="margin-left:auto;display:flex;gap:4px;align-items:center">${i.flag ? '<span class="tag chg">変更あり</span>' : ''}<span class="tag ${CLS[i.status] || 'TODO'}">${esc(i.status)}</span>${!S.closed && !i.need ? `<button class="del" data-del="${esc(i.no)}" aria-label="削除">削除</button>` : ''}</span></div>
-        ${i.pos && /-\d+$/.test(i.no) ? `<span class="tag sb">${posInfo(i.pos).grid}写真の${posInfo(i.pos).text}</span>` : ''}
+        ${i.pos && isSplit(i.no) ? `<span class="tag sb">${posInfo(i.pos).grid}写真の${posInfo(i.pos).text}</span>` : ''}
         ${i.name || i.nameJa ? `<div style="font-size:13px;line-height:1.35">${esc(i.nameJa || i.name)}${i.nameJa && i.name ? `<div class="sub">${esc(i.name)}</div>` : ''}</div>` : ''}
         ${i.price || i.memo ? `<div class="sub">${i.price ? '税込 ' + esc(i.price) + '円 ' : ''}${esc(i.memo || '')}</div>` : ''}
         <div class="lines">${lines}</div>
@@ -382,7 +389,7 @@ call({ action: 'staff_get' }, true);
       im.src = t.src; im.src = big(t.src);
       // 有商品框就在大圖上也圈起來
       const hl = lb.querySelector('.lbhl'), bx = String(t.dataset.box || '').split(',').map(Number);
-      if (bx.length === 4 && bx.every(v => v >= 0)) {
+      if (bx.length === 4 && bx.every(v => v >= 0) && boxOk(bx)) {
         Object.assign(hl.style, { display: 'block', top: bx[0] / 10 + '%', left: bx[1] / 10 + '%', height: (bx[2] - bx[0]) / 10 + '%', width: (bx[3] - bx[1]) / 10 + '%' });
       } else hl.style.display = 'none';
       lb.classList.remove('big'); lb.style.display = 'block'; document.body.style.overflow = 'hidden';
