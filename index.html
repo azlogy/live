@@ -6,6 +6,17 @@
 <title>今日連線商品</title>
 <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <style>
+  .ribbon { position: absolute; left: 0; bottom: 10px; background: #E02424; color: #fff; font-weight: 800; font-size: 15px; padding: 4px 12px 4px 10px; border-radius: 0 8px 8px 0; box-shadow: 0 2px 6px rgba(0,0,0,.25); z-index: 2; }
+  .left { margin: 6px 0 2px; padding: 6px 10px; border-radius: 8px; background: #FFF1D6; color: #9A4A00; font-size: 14px; font-weight: 600; border: 1.5px solid #F59E0B; }
+  .left b { font-size: 17px; color: #C2410C; }
+  .left.zero { background: #F1EFE8; color: #666; border-color: #ccc; }
+  .left.zero b { color: #666; }
+  .mts { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+  .mt { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 6px; font-size: 14px; font-weight: 800; letter-spacing: .5px; }
+  .mt.sale { background: #E02424; color: #fff; }
+  .mt.limit { background: #FFF1D6; color: #9A4A00; border: 1.5px solid #F59E0B; }
+  .card.hot { border-color: #F3A5A5; }
+
   .hl { position: absolute; border: 3px solid #FF2D78; border-radius: 10px; box-shadow: 0 0 0 2px rgba(255,255,255,.9), 0 0 0 9999px rgba(0,0,0,.18); pointer-events: none; box-sizing: border-box; }
   .cw { position: relative; overflow: hidden; width: 76px; height: 76px; border-radius: 8px; flex-shrink: 0; background: #e9e8e2; }
   .cw img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -103,7 +114,7 @@
 <div class="bar" id="bar" style="display:none"><button class="btn" id="submit">送出訂單</button></div>
 <div id="toast" class="banner"></div>
 <div id="busy"><div class="bx"><div class="spin"></div><div id="busyText">處理中…</div></div></div>
-<div id="done"><div class="dlg"><div class="ok-ic">✓</div><h2 id="doneTitle">下單成功</h2><div class="muted" id="doneSub"></div>
+<div id="done"><div class="dlg"><div class="ok-ic">✓</div><h2 id="doneTitle">下單成功</h2><div class="muted" id="doneSub" style="white-space: pre-line"></div>
   <div class="list" id="doneList"></div><button class="btn" id="doneOk">好</button></div></div>
 
 <script>
@@ -218,6 +229,23 @@ function subPicker(no, i, l, lines) {
   return `<select class="subsel ${l.err && !typing ? 'err' : ''}" data-subsel="${esc(no)}" data-i="${i}">${o}</select>` +
     (typing ? `<input type="text" class="sub ${l.err ? 'err' : ''}" data-sub="${esc(no)}" data-i="${i}" placeholder="輸入子會員編號（例：${esc(S.agency.example || '')}）" value="${esc(l.sub)}" autocapitalize="characters">` : '');
 }
+// 採買人員的備註：「特價」「限量」變成醒目的標籤，其他文字照常顯示
+function memoTags(memo, hasLeft) {
+  let m = String(memo || '').trim();
+  if (!m) return '';
+  let tags = '';
+  if (/特價|特価|特賣|セール|SALE|折扣|優惠|お買い得|値下/i.test(m)) {
+    // 特價只在照片左下角掛紅色角標（不重複顯示）
+    m = m.replace(/特價|特価|特賣|セール|SALE|折扣|優惠|お買い得|値下げ?/gi, ' ');
+  }
+  const lim = m.match(/(限量|限定|数量限定|數量限定|残り|剩)\s*(\d+\s*(個|件|點|点|組|袋|箱)?)?/);
+  if (lim) {
+    if (!hasLeft) tags += `<span class="mt limit">限量${lim[2] ? ' ' + esc(lim[2].replace(/\s/g, '')) : ''}</span>`;
+    m = m.replace(lim[0], ' ');
+  }
+  m = m.replace(/\s+/g, ' ').trim();
+  return (tags ? `<div class="mts">${tags}</div>` : '') + (m ? `<div class="memo">${esc(m)}</div>` : '');
+}
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 function showBusy(text) {
@@ -296,9 +324,14 @@ function render() {
       h += `<div class="grid">` + S.items.map(it => {
         const lines = cart[it.no] || [];
         const q = lines.reduce((a, l) => a + l.q, 0);
-        const tag = it.sold ? `<span class="tag ng">已售完</span>` : (ordered[it.no] ? `<span class="tag ok">已訂 ${ordered[it.no]}</span>` : '');
+        const full = it.left === 0 && !q;
+        const tag = it.sold ? `<span class="tag ng">已售完</span>` : full ? `<span class="tag ng">已額滿</span>` : (ordered[it.no] ? `<span class="tag ok">已訂 ${ordered[it.no]}</span>` : '');
+        // 限量：大家一起看得到還剩幾個（扣掉自己購物車裡的）
+        const leftNow = it.left == null ? null : Math.max(0, it.left - q);
+        const leftBar = it.left == null || it.sold ? '' : `<div class="left ${leftNow ? '' : 'zero'}">限量 ${it.limit} 個・${leftNow ? `還剩 <b>${leftNow}</b> 個` : '<b>已額滿</b>'}</div>`;
         let ctl = '';
         if (it.sold) ctl = '<div class="muted" style="margin-top:6px">這個已經買不到了</div>';
+        else if (full) ctl = '<div class="muted" style="margin-top:6px">限量已經被訂完了</div>';
         else if (!AG) {
           // 一般會員：一個數量＋備註
           const l = lines[0] || { q: 0, memo: '' };
@@ -316,9 +349,9 @@ function render() {
             </div>`).join('') + `<button class="addsub" data-add="${esc(it.no)}">＋ 分給其他子會員</button>`;
         }
         return `<div class="card ${q ? 'sel' : ''}">
-          <div class="ph" style="overflow:hidden">${cropImg(it.url, it.box, isSplit(it.no))}${tag}<span class="no">${esc(it.no.slice(5))}</span></div>
+          <div class="ph" style="overflow:hidden">${cropImg(it.url, it.box, isSplit(it.no))}${tag}${/特價|特価|特賣|セール|SALE|折扣|優惠|お買い得|値下/i.test(it.memo || '') ? '<span class="ribbon">特價</span>' : ''}<span class="no">${esc(it.no.slice(5))}</span></div>
           <div class="cb">
-          ${it.pos && isSplit(it.no) ? `<div class="pos">${posInfo(it.pos).grid}照片${posInfo(it.pos).text}的</div>` : ''}${it.name ? `<div class="pname">${esc(it.name)}</div>` : ''}${yen(it.price) ? `<div class="price"><b>${yen(it.price)}</b> <span class="muted">含稅</span></div>` : ''}${it.memo ? `<div class="memo">${esc(it.memo)}</div>` : ''}${ctl}
+          ${it.pos && isSplit(it.no) ? `<div class="pos">${posInfo(it.pos).grid}照片${posInfo(it.pos).text}的</div>` : ''}${it.name ? `<div class="pname">${esc(it.name)}</div>` : ''}${yen(it.price) ? `<div class="price"><b>${yen(it.price)}</b> <span class="muted">含稅</span></div>` : ''}${memoTags(it.memo, it.left != null)}${leftBar}${ctl}
           </div></div>`;
       }).join('') + `</div>`;
     }
@@ -344,6 +377,7 @@ function render() {
     if (o.cancelled) st = `<span class="pill" style="background:#F1EFE8;color:#444">已取消</span>`;
     else if (o.itemStatus === '欠品') st = `<span class="pill ng">缺貨取消</span>`;
     else if (o.got != null && o.got < o.qty) st = `<span class="pill ng">只買到 ${o.got}</span>`;
+    else if (o.wait) st = `<span class="pill ng">${o.wait} 個超過限量，可能買不到</span>`;
     else if (bought) st = `<span class="pill ok">已買到</span>`;
     const lock = o.cancelled || o.itemStatus === '欠品' || S.closed;
     h += `<div class="line" style="${o.cancelled ? 'opacity:.5' : ''}"><img src="${esc(o.url || '')}" alt="">
@@ -365,6 +399,13 @@ function render() {
     const no = b.dataset.no, i = Number(b.dataset.i);
     const lines = cart[no] = cart[no] || [];
     if (!lines[i]) lines[i] = { sub: '', q: 0, memo: '' };
+    // 限量：購物車加起來不能超過還剩的數量
+    const it = S.items.find(x => x.no === no);
+    if (Number(b.dataset.d) > 0 && it && it.left != null && lines.reduce((a, l) => a + l.q, 0) >= it.left) {
+      toast(it.left ? '這個商品只剩 ' + it.left + ' 個' : '限量已經被訂完了', false);
+      if (!lines[i].q) lines.splice(i, 1);
+      return;
+    }
     lines[i].q = Math.max(0, Math.min(99, lines[i].q + Number(b.dataset.d)));
     if (!lines[i].q) lines.splice(i, 1);           // 數量變 0 → 這一行拿掉
     if (!lines.length) delete cart[no];
@@ -372,6 +413,8 @@ function render() {
   });
   app.querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
     const no = b.dataset.add;
+    const it = S.items.find(x => x.no === no);
+    if (it && it.left != null && (cart[no] || []).reduce((a, l) => a + l.q, 0) >= it.left) { toast(it.left ? '這個商品只剩 ' + it.left + ' 個' : '限量已經被訂完了', false); return; }
     (cart[no] = cart[no] || []).push({ sub: '', q: 1, memo: '' });
     render();
     // 新增的那一行：直接打開子會員選單
@@ -451,19 +494,26 @@ document.getElementById('submit').onclick = async () => {
   if (r && r.ok) {
     cart = {}; render();
     const n = list.reduce((a, x) => a + x.q, 0);
-    showDone('下單成功', `共 ${list.length} 筆、${n} 個，已經通知現場採買人員`,
+    const msg = r.msg || '';
+    if (msg.indexOf('沒有送出') === 0) { toast(msg.replace(/^沒有送出\n?/, ''), false); return; }   // 全部都被訂完了
+    const partial = /售完|限量|只剩/.test(msg);   // 有的被訂完或數量被改少 → 把原因寫清楚
+    showDone(partial ? '部分下單成功' : '下單成功',
+      partial ? msg.split('\n').slice(1).join('\n') + '\n（下面是你這次送出的內容，實際數量以「我的訂單」為準）' : `共 ${list.length} 筆、${n} 個，已經通知現場採買人員`,
       list.map(x => ({ no: x.no, name: names[x.no], sub: x.sub, q: x.q, memo: x.memo, url: urls[x.no], tag: before[x.no + '|' + x.sub] ? '追加' : '' })));
-    if (r.msg && r.msg.indexOf('售完') >= 0) toast(r.msg, false);
   }
 };
 
 // 每 15 秒自動更新（看新上架的商品、售完狀態）
 // 購物車裡選好的數量不會被清掉；只有正在打字時先不更新，免得打到一半畫面跳掉
-setInterval(() => {
-  if (!S || !S.member || S.closed || busy || document.hidden) return;
-  if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
-  call({ action: 'init' }, true);
-}, 15000);
+// 有限量商品的時候改成每 5 秒更新（剩幾個要比較即時）
+(function poll() {
+  const fast = S && S.items && S.items.some(i => i.left != null && i.left > 0);
+  setTimeout(() => {
+    if (S && S.member && !S.closed && !busy && !document.hidden &&
+        !(document.activeElement && document.activeElement.tagName === 'INPUT')) call({ action: 'init' }, true);
+    poll();
+  }, fast ? 5000 : 15000);
+})();
 // 從別的 App 切回來時，馬上更新一次
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && S && S.member && !S.closed && !busy) call({ action: 'init' }, true);
