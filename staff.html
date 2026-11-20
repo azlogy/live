@@ -5,6 +5,33 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>現場確認</title>
 <style>
+  #ed { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 30; display: none; align-items: flex-end; justify-content: center; }
+  #ed .sh { background: #fff; width: 100%; max-width: 480px; border-radius: 18px 18px 0 0; padding: 18px 18px 22px; box-sizing: border-box; }
+  #ed h3 { margin: 0 0 12px; font-size: 18px; }
+  #ed label.l { display: block; font-size: 13px; color: #666; margin: 12px 0 6px; }
+  #ed .row { display: flex; gap: 8px; align-items: center; }
+  #ed #edM { width: 100%; }
+  #ed input[type=number], #ed input[type=text] { flex: 1; height: 46px; font-size: 18px; border: 1.5px solid #ccc; border-radius: 10px; padding: 0 12px; box-sizing: border-box; min-width: 0; }
+  #ed .seg { display: flex; border: 1.5px solid #06C755; border-radius: 10px; overflow: hidden; flex: none; }
+  #ed .seg button { border: 0; background: #fff; color: #0F6E56; font-size: 15px; font-weight: 700; padding: 0 14px; height: 43px; }
+  #ed .seg button.on { background: #06C755; color: #fff; }
+  #ed .chk { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 14px; border: 1.5px solid #ddd; border-radius: 12px; font-size: 17px; font-weight: 700; margin-top: 8px; }
+  #ed .chk input[type=checkbox] { width: 24px; height: 24px; accent-color: #E02424; flex: none; }
+  #ed .chk.on.sale { border-color: #E02424; background: #FFF1F1; color: #B91C1C; }
+  #ed .chk.on.lim { border-color: #F59E0B; background: #FFF7E6; color: #9A4A00; }
+  #ed .chk input[type=number] { flex: 0 0 90px; height: 40px; font-size: 18px; text-align: center; }
+  #ed .btns { display: flex; gap: 10px; margin-top: 18px; }
+  #ed .btns button { flex: 1; height: 52px; border-radius: 12px; font-size: 17px; font-weight: 800; border: 0; }
+  #ed .btns .c { background: #F1EFE8; color: #444; }
+  #ed .btns .s { background: #06C755; color: #fff; box-shadow: 0 4px 0 #04913E; }
+
+  .edit { border: 1px solid #9FD9C4; background: #F2FBF7; color: #0F6E56; border-radius: 6px; font-size: 12px; padding: 3px 8px; }
+  .mts { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+  .mt { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 800; letter-spacing: .5px; }
+  .mt.sale { background: #E02424; color: #fff; }
+  .mt.limit { background: #FFF1D6; color: #9A4A00; border: 1.5px solid #F59E0B; }
+  .card.hot { border-color: #F3A5A5; }
+
   .hl { position: absolute; border: 3px solid #FF2D78; border-radius: 10px; box-shadow: 0 0 0 2px rgba(255,255,255,.9), 0 0 0 9999px rgba(0,0,0,.18); pointer-events: none; box-sizing: border-box; }
   .cw { position: relative; overflow: hidden; width: 76px; height: 76px; border-radius: 8px; flex-shrink: 0; background: #e9e8e2; }
   .cw img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -80,6 +107,16 @@
 <header><span>現場確認</span><span class="st" id="st"></span></header>
 <main id="app"><div class="center">読み込み中…</div></main>
 <div class="bar"><button id="close">締切（受付終了）</button></div>
+<div id="ed"><div class="sh" role="dialog" aria-labelledby="edT">
+  <h3 id="edT">価格・備考</h3>
+  <label class="l" for="edP">価格（空欄なら変更しない）</label>
+  <div class="row"><input id="edP" type="number" inputmode="numeric" placeholder="例：980"><div class="seg"><button type="button" data-tax="in" class="on">税込</button><button type="button" data-tax="ex">税抜</button></div></div>
+  <label class="chk sale" id="edSaleL"><input id="edSale" type="checkbox">特価（とっか）</label>
+  <label class="chk lim" id="edLimL"><input id="edLim" type="checkbox"><span>数量限定</span><input id="edLimN" type="number" inputmode="numeric" placeholder="個数" min="1" aria-label="限定の個数"><span>個</span></label>
+  <label class="l" for="edM">その他メモ（任意）</label>
+  <input id="edM" type="text" placeholder="例：新パッケージ">
+  <div class="btns"><button class="c" type="button" id="edX">キャンセル</button><button class="s" type="button" id="edOk">保存</button></div>
+</div></div>
 <div id="toast"></div>
 <div id="busy"><div class="bx"><div class="spin"></div><div id="busyText">処理中…</div></div></div>
 
@@ -155,6 +192,23 @@ function cropImg(url, box, useBox) {
   const n = NAT[big], c = n && cropCalc(n[0], n[1], box);
   if (c) return `<img src="${src}" alt="" data-box="${esc(box)}" style="${c.img}"><i class="hl" style="${c.hl}"></i>`;
   return `<img src="${src}" loading="lazy" alt="" data-box="${esc(box)}" onload="fitCrop(this)">`;
+}
+// 採買人員的備註：「特價」「限量」變成醒目的標籤，其他文字照常顯示
+function memoTags(memo) {
+  let m = String(memo || '').trim();
+  if (!m) return '';
+  let tags = '';
+  if (/特價|特価|特賣|セール|SALE|折扣|優惠|お買い得|値下/i.test(m)) {
+    tags += `<span class="mt sale">特価</span>`;
+    m = m.replace(/特價|特価|特賣|セール|SALE|折扣|優惠|お買い得|値下げ?/gi, ' ');
+  }
+  const lim = m.match(/(限量|限定|数量限定|數量限定|残り|剩)\s*(\d+\s*(個|件|點|点|組|袋|箱)?)?/);
+  if (lim) {
+    tags += `<span class="mt limit">数量限定${lim[2] ? ' ' + esc(lim[2].replace(/\s/g, '')) : ''}</span>`;
+    m = m.replace(lim[0], ' ');
+  }
+  m = m.replace(/\s+/g, ' ').trim();
+  return (tags ? `<div class="mts">${tags}</div>` : '') + (m ? `<div class="memo">${esc(m)}</div>` : '');
 }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function toast(t, good) {
@@ -235,7 +289,7 @@ function render() {
         <span style="margin-left:auto;display:flex;gap:4px;align-items:center">${i.flag ? '<span class="tag chg">変更あり</span>' : ''}<span class="tag ${CLS[i.status] || 'TODO'}">${esc(i.status)}</span>${!S.closed && !i.need ? `<button class="del" data-del="${esc(i.no)}" aria-label="削除">削除</button>` : ''}</span></div>
         ${i.pos && isSplit(i.no) ? `<span class="tag sb">${posInfo(i.pos).grid}写真の${posInfo(i.pos).text}</span>` : ''}
         ${i.name || i.nameJa ? `<div style="font-size:13px;line-height:1.35">${esc(i.nameJa || i.name)}${i.nameJa && i.name ? `<div class="sub">${esc(i.name)}</div>` : ''}</div>` : ''}
-        ${i.price || i.memo ? `<div class="sub">${i.price ? '税込 ' + esc(i.price) + '円 ' : ''}${esc(i.memo || '')}</div>` : ''}
+        <div class="sub" style="display:flex;align-items:center;gap:6px">${i.price ? `税込 ${esc(i.price)}円` : '<span style="color:#C2410C;font-weight:700">価格なし</span>'}${S.closed ? '' : `<button class="edit" data-edit="${esc(i.no)}">価格・備考を編集</button>`}</div>${memoTags(i.memo).replace('>特價<', '>特価<')}
         <div class="lines">${lines}</div>
         ${S.closed || !i.need ? '' : `<div class="ops">
           <button class="main" data-no="${esc(i.no)}" data-act="ok">全数購入</button>
@@ -248,6 +302,7 @@ function render() {
   app.innerHTML = h;
   app.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { VIEW = b.dataset.view; render(); });
   bindStores(app);
+  app.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openEdit(b.dataset.edit));
   app.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
     if (confirm(b.dataset.del.slice(5) + ' 番の商品を削除しますか？\nお客様の注文ページからも消えます。')) call({ action: 'staff_set', no: b.dataset.del, act: 'del' });
   });
@@ -403,6 +458,50 @@ call({ action: 'staff_get' }, true);
   });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
 })();
+
+// 価格・備考の編集：特価・数量限定はチェックで選ぶだけ（入力は数字だけ）
+let ED_NO = null, ED_TAX = 'in';
+const SALE_RE = /特價|特価|特賣|セール|SALE|折扣|優惠|お買い得|値下げ?/gi;
+const LIM_RE = /(限量|限定|数量限定|數量限定|残り|剩)\s*(\d+)?\s*(個|件|點|点|組|袋|箱)?/;
+function openEdit(no) {
+  const i = S.items.find(x => x.no === no); if (!i) return;
+  ED_NO = no;
+  let m = String(i.memo || '');
+  const sale = SALE_RE.test(m); SALE_RE.lastIndex = 0;
+  m = m.replace(SALE_RE, ' ');
+  const lim = m.match(LIM_RE);
+  if (lim) m = m.replace(lim[0], ' ');
+  document.getElementById('edT').textContent = no.slice(5) + ' 番　価格・備考';
+  document.getElementById('edP').value = '';
+  document.getElementById('edP').placeholder = i.price ? '今：税込 ' + i.price + '円' : '例：980';
+  setTax('in');
+  document.getElementById('edSale').checked = sale;
+  document.getElementById('edLim').checked = !!lim;
+  document.getElementById('edLimN').value = lim && lim[2] ? lim[2] : '';
+  document.getElementById('edM').value = m.replace(/\s+/g, ' ').trim();
+  syncChk();
+  document.getElementById('ed').style.display = 'flex';
+}
+function setTax(t) { ED_TAX = t; document.querySelectorAll('#ed [data-tax]').forEach(b => b.classList.toggle('on', b.dataset.tax === t)); }
+function syncChk() {
+  document.getElementById('edSaleL').classList.toggle('on', document.getElementById('edSale').checked);
+  document.getElementById('edLimL').classList.toggle('on', document.getElementById('edLim').checked);
+}
+document.querySelectorAll('#ed [data-tax]').forEach(b => b.onclick = () => setTax(b.dataset.tax));
+document.getElementById('edSale').onchange = syncChk;
+document.getElementById('edLim').onchange = () => { syncChk(); if (document.getElementById('edLim').checked) document.getElementById('edLimN').focus(); };
+document.getElementById('edLimN').oninput = () => { if (document.getElementById('edLimN').value) { document.getElementById('edLim').checked = true; syncChk(); } };
+document.getElementById('edX').onclick = () => { document.getElementById('ed').style.display = 'none'; };
+document.getElementById('ed').onclick = e => { if (e.target.id === 'ed') document.getElementById('ed').style.display = 'none'; };
+document.getElementById('edOk').onclick = () => {
+  const p = document.getElementById('edP').value.trim();
+  const limOn = document.getElementById('edLim').checked, n = document.getElementById('edLimN').value.trim();
+  if (limOn && !(Number(n) >= 1)) { toast('数量限定の個数を入れてください', false); document.getElementById('edLimN').focus(); return; }
+  const memo = [document.getElementById('edSale').checked ? '特価' : '', limOn ? '限量' + Number(n) : '', document.getElementById('edM').value.trim()].filter(Boolean).join(' ');
+  const text = (p ? p + (ED_TAX === 'ex' ? '税抜' : '') + ' ' : '') + (memo || '-');
+  document.getElementById('ed').style.display = 'none';
+  call({ action: 'staff_edit', no: ED_NO, text: text });
+};
 </script>
 </body>
 </html>
