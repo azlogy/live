@@ -381,7 +381,7 @@ function render() {
     else if (bought) st = `<span class="pill ok">已買到</span>`;
     const lock = o.cancelled || o.itemStatus === '欠品' || S.closed;
     h += `<div class="line" style="${o.cancelled ? 'opacity:.5' : ''}"><img src="${esc(o.url || '')}" alt="">
-      <div class="t"><div>${esc(o.no.slice(5))} 號 ${o.sub ? `<span class="pill sb">${esc(o.sub)}</span>` : ''} ${st}</div>
+      <div class="t"><div>${esc(o.no.slice(5))} 號 ${o.sub ? `<span class="pill sb">${esc(o.sub)}</span>` : ''}${o.byOther ? `<span class="pill" style="background:#EEF2FF;color:#3949AB">${S.agency ? '子會員自己下單' : '代理代訂'}</span>` : ''} ${st}</div>
       ${o.name ? `<div class="muted" style="color:#555">${esc(o.name)}</div>` : ''}
       <div style="font-size:17px;font-weight:600">×${o.qty}${priceOf[o.no] && !o.cancelled ? ` <span style="font-size:13px;font-weight:400;color:#C2410C">${yen(priceOf[o.no] * o.qty)}</span>` : ''} ${o.parts.length > 1 ? `<span class="muted">(${o.parts.join('+')})</span>` : ''}</div>
       ${lock ? (o.memo ? `<div class="muted">${esc(o.memo)}</div>` : '') : `
